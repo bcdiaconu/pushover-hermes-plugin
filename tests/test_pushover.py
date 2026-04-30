@@ -13,7 +13,7 @@ Ported from hermes-agent tests/gateway/test_pushover.py with these changes:
 
 import pytest
 import aiohttp
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 from gateway.config import PlatformConfig
 from pushover_hermes_plugin.adapter import (
@@ -162,8 +162,10 @@ class TestPushoverAdapterSend:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_cm)
         return mock_session
 
     @pytest.mark.asyncio
@@ -258,8 +260,10 @@ class TestPushoverMessageTruncation:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_cm)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await adapter.send("user", long_text)
@@ -278,8 +282,10 @@ class TestPushoverMessageTruncation:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_cm)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             await adapter.send("user", short_text)
@@ -327,8 +333,10 @@ class TestPushoverSendImage:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_cm)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await adapter.send_image("user", "https://example.com/img.jpg", "Look at this")
@@ -346,8 +354,10 @@ class TestPushoverSendImage:
         mock_session = AsyncMock()
         mock_session.__aenter__ = AsyncMock(return_value=mock_session)
         mock_session.__aexit__ = AsyncMock(return_value=None)
-        mock_session.post.return_value.__aenter__ = AsyncMock(return_value=mock_resp)
-        mock_session.post.return_value.__aexit__ = AsyncMock(return_value=None)
+        mock_cm = MagicMock()
+        mock_cm.__aenter__ = AsyncMock(return_value=mock_resp)
+        mock_cm.__aexit__ = AsyncMock(return_value=None)
+        mock_session.post = MagicMock(return_value=mock_cm)
 
         with patch("aiohttp.ClientSession", return_value=mock_session):
             result = await adapter.send_image("user", "https://example.com/img.jpg")

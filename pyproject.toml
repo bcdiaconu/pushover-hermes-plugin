@@ -6,6 +6,8 @@ build-backend = "setuptools.build_meta"
 name = "pushover-hermes-plugin"
 version = "1.0.0"
 description = "Pushover platform plugin for Hermes Agent — outbound push notifications"
+authors = [{name = "Benoit Beauchamp"}]
+license = {text = "MIT"}
 requires-python = ">=3.11"
 dependencies = ["aiohttp>=3.9"]
 
