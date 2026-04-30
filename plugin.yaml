@@ -1,0 +1,15 @@
+name: pushover-platform
+kind: platform
+version: 1.0.0
+description: >
+  Pushover gateway adapter for Hermes Agent.
+  Sends push notifications via the Pushover API.
+  Outbound-only — no inbound message handling.
+author: Benoit Beauchamp
+requires_env:
+  - name: PUSHOVER_APP_TOKEN
+    description: "API Token from your Pushover app (pushover.net/apps)"
+    secret: false
+  - name: PUSHOVER_USER_KEY
+    description: "Your Pushover User Key (shown on pushover.net front page)"
+    secret: false
