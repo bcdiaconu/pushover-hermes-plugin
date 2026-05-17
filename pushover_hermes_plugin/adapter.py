@@ -220,6 +220,7 @@ def register(ctx) -> None:
         emoji="\U0001f514",
         pii_safe=True,
         allow_update_command=False,
+        cron_deliver_env_var="PUSHOVER_HOME_CHANNEL",
         platform_hint=(
             "You are sending a Pushover push notification. Keep messages very short \u2014 "
             "Pushover notifications are brief alerts, max 1024 characters. No markdown "
