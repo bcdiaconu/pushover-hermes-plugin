@@ -52,8 +52,14 @@ def check_requirements() -> bool:
         return False
 
 
+
+
 def validate_config(config) -> bool:
-    """Check whether Pushover is configured in config.yaml."""
+    """Check whether Pushover is configured via env vars or config.yaml."""
+    # Env vars take precedence — always check them first.
+    if os.getenv("PUSHOVER_APP_TOKEN", "").strip() and os.getenv("PUSHOVER_USER_KEY", "").strip():
+        return True
+    # Fall back to config.yaml values.
     token = getattr(config, "token", "") or ""
     api_key = getattr(config, "api_key", "") or ""
     return bool(token and api_key)
