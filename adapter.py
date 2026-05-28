@@ -484,13 +484,13 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             return
         question = _extract_question(response)
         if _NOTIFY_QUESTION == "minimal":
-            title = "Hermes — Clarification"
+            title = "Hermes — Question"
             message = "I have a question"
         elif _NOTIFY_QUESTION == "summary":
-            title = "Hermes — Clarification"
+            title = "Hermes — Question"
             message = question[:200]
         else:  # full
-            title = "Hermes — Clarification"
+            title = "Hermes — Question"
             message = question
     elif _has_error(response):
         if "errors" not in _NOTIFY_STATE_SET:
