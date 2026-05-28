@@ -21,6 +21,9 @@ optional_env:
   - name: PUSHOVER_NOTIFY_QUESTION
     description: "Question detail level: full, summary, or minimal (privacy)"
     default: "full"
+  - name: PUSHOVER_NOTIFY_STATES
+    description: "Space-separated states: finished, questions, errors, approvals, all"
+    default: "all"
   - name: PUSHOVER_NOTIFY_DEVICE
     description: "Optional device filter for notifications"
     default: ""

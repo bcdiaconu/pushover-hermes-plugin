@@ -426,3 +426,67 @@ class TestNotificationHelpers:
         response = "Starting task...\nError: connection refused\nRetrying..."
         result = _extract_error(response)
         assert "Error: connection refused" == result
+
+
+class TestNotificationStateFiltering:
+    """Tests for PUSHOVER_NOTIFY_STATES per-state filtering."""
+
+    def _call_with_states(self, states: str, kwargs: dict) -> bool:
+        """Helper: set states env, call hook, return whether notification was sent."""
+        import pushover_hermes_plugin.adapter as mod
+        orig_states = mod._NOTIFY_STATES
+        orig_set = mod._NOTIFY_STATE_SET
+        sent = []
+
+        def capture(title, msg):
+            sent.append((title, msg))
+
+        mod._NOTIFY_STATES = states.lower()
+        mod._NOTIFY_STATE_SET = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "approvals"}
+        mod._NOTIFY_ENABLED = True
+
+        try:
+            with patch.object(mod, "_send_pushover_sync", capture):
+                mod._on_post_llm_call(**kwargs)
+            return len(sent) > 0
+        finally:
+            mod._NOTIFY_STATES = orig_states
+            mod._NOTIFY_STATE_SET = orig_set
+
+    def test_finished_allowed(self):
+        sent = self._call_with_states("finished", {"assistant_response": "Task done."})
+        assert sent is True
+
+    def test_finished_blocked(self):
+        sent = self._call_with_states("errors", {"assistant_response": "Task done."})
+        assert sent is False
+
+    def test_questions_allowed(self):
+        sent = self._call_with_states("questions", {"assistant_response": "Which option?"})
+        assert sent is True
+
+    def test_questions_blocked(self):
+        sent = self._call_with_states("finished", {"assistant_response": "Which option?"})
+        assert sent is False
+
+    def test_errors_allowed(self):
+        sent = self._call_with_states("errors", {"assistant_response": "Error: failed"})
+        assert sent is True
+
+    def test_errors_blocked(self):
+        sent = self._call_with_states("finished", {"assistant_response": "Error: failed"})
+        assert sent is False
+
+    def test_all_states_allowed(self):
+        # "all" means everything is allowed
+        assert self._call_with_states("all", {"assistant_response": "Done."}) is True
+        assert self._call_with_states("all", {"assistant_response": "Question?"}) is True
+        assert self._call_with_states("all", {"assistant_response": "Error: x"}) is True
+
+    def test_multiple_states(self):
+        sent_err = self._call_with_states("errors questions", {"assistant_response": "Error: x"})
+        sent_q = self._call_with_states("errors questions", {"assistant_response": "Which?"})
+        sent_fin = self._call_with_states("errors questions", {"assistant_response": "Done."})
+        assert sent_err is True
+        assert sent_q is True
+        assert sent_fin is False

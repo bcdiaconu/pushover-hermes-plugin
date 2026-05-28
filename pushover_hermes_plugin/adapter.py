@@ -80,7 +80,7 @@ def is_connected(config) -> bool:
 
 
 def interactive_setup() -> None:
-    """Prompt for Pushover credentials and write them to ~/.hermes/.env.
+    """Prompt for Pushover credentials and notification prefs, write to ~/.hermes/.env.
 
     Called by ``hermes gateway setup`` when the user picks Pushover.
     Inlines prompts rather than importing _prompt_env_var from
@@ -98,6 +98,7 @@ def interactive_setup() -> None:
     env_path = os.path.expanduser("~/.hermes/.env")
     updates: Dict[str, str] = {}
 
+    # --- Credentials ---
     for var, prompt in [
         ("PUSHOVER_APP_TOKEN", "Pushover App Token (from pushover.net/apps)"),
         ("PUSHOVER_USER_KEY",  "Pushover User Key (from pushover.net front page)"),
@@ -108,6 +109,59 @@ def interactive_setup() -> None:
         value = input(f"  {prompt}{display}: ").strip()
         if value:
             updates[var] = value
+
+    # --- Agent lifecycle notifications ---
+    print()
+    print("  \u2500\u2500\u2500 Agent Lifecycle Notifications \u2500\u2500\u2500")
+    print("  Get Pushover alerts when Hermes finishes work, asks")
+    print("  questions, hits errors, or needs command approval.")
+    print()
+
+    current_enabled = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower()
+    enabled_display = f" [{current_enabled}]" if current_enabled else ""
+    enable_val = input(f"  Enable notifications{enabled_display} (true/false): ").strip().lower()
+    if enable_val in {"true", "false"}:
+        updates["PUSHOVER_NOTIFY_ENABLED"] = enable_val
+    elif enable_val:
+        print("  Invalid value, skipping.")
+
+    if updates.get("PUSHOVER_NOTIFY_ENABLED", os.getenv("PUSHOVER_NOTIFY_ENABLED", "")).lower() in {"true", "1", "yes"}:
+        # Question detail level
+        print()
+        current_q = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full")
+        print(f"  Question detail level [{current_q}]:")
+        print("    full     — include the actual question text")
+        print("    summary  — include only the first line")
+        print("    minimal  — just 'I have a question' (privacy)")
+        q_val = input("  > ").strip().lower()
+        if q_val in {"full", "summary", "minimal"}:
+            updates["PUSHOVER_NOTIFY_QUESTION"] = q_val
+        elif q_val:
+            print("  Invalid value, skipping.")
+
+        # Notification states
+        print()
+        print("  Which events should trigger notifications?")
+        print("    (space-separated: finished, questions, errors, approvals, all)")
+        current_states = os.getenv("PUSHOVER_NOTIFY_STATES", "all")
+        states_val = input(f"  States [{current_states}]: ").strip().lower()
+        valid_states = {"finished", "questions", "errors", "approvals", "all"}
+        if states_val:
+            parsed = set(states_val.replace(",", " ").split())
+            if parsed.issubset(valid_states):
+                if "all" in parsed:
+                    updates["PUSHOVER_NOTIFY_STATES"] = "all"
+                else:
+                    updates["PUSHOVER_NOTIFY_STATES"] = " ".join(sorted(parsed))
+            else:
+                print("  Invalid state(s), skipping.")
+
+        # Device filter
+        current_device = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
+        device_display = f" [{current_device}]" if current_device else ""
+        device_val = input(f"  Device filter (leave empty = all devices){device_display}: ").strip()
+        if device_val != current_device:
+            updates["PUSHOVER_NOTIFY_DEVICE"] = device_val
 
     if not updates:
         print("  No changes.")
@@ -238,6 +292,8 @@ class PushoverAdapter(BasePlatformAdapter):
 _NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
 _NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
 _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
+_NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all"
+_NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals"}
 
 
 def _send_pushover_sync(title: str, message: str) -> None:
@@ -330,6 +386,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
 
     Sends a Pushover notification when the agent yields control back
     to the user.  Detects: finished/idle, clarifying questions, errors.
+    Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
     if not _NOTIFY_ENABLED:
         return
@@ -338,8 +395,10 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     if not response.strip():
         return
 
-    # Detect notification type
+    # Detect notification type and check state filter
     if _is_question(response):
+        if "questions" not in _NOTIFY_STATE_SET:
+            return
         question = _extract_question(response)
         if _NOTIFY_QUESTION == "minimal":
             title = "Hermes — Question"
@@ -351,10 +410,14 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             title = "Hermes — Question"
             message = question
     elif _has_error(response):
+        if "errors" not in _NOTIFY_STATE_SET:
+            return
         error = _extract_error(response)
         title = "Hermes — Error"
         message = error[:500]
     else:
+        if "finished" not in _NOTIFY_STATE_SET:
+            return
         title = "Hermes"
         message = "finished"
 
@@ -362,8 +425,13 @@ def _on_post_llm_call(**kwargs: Any) -> None:
 
 
 def _on_pre_approval_request(**kwargs: Any) -> None:
-    """Hook handler: fires when a dangerous command needs user approval."""
+    """Hook handler: fires when a dangerous command needs user approval.
+
+    Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
+    """
     if not _NOTIFY_ENABLED:
+        return
+    if "approvals" not in _NOTIFY_STATE_SET:
         return
 
     command = str(kwargs.get("command") or "")
