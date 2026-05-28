@@ -597,31 +597,21 @@ def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
 
 def _on_pre_tool_call(**kwargs: Any) -> None:
     """Hook handler: fires BEFORE every tool execution.
-    
-    Logs ALL tool calls to plugin log for debugging.
-    
+
     Expected kwargs: tool_name, args, task_id, session_id, tool_call_id
     """
-    # ALWAYS log to file for debugging - bypass logger entirely
-    try:
-        with open("/tmp/pushover_hook_calls.log", "a") as f:
-            f.write(f"PRE_TOOL: {kwargs}\n")
-            f.flush()
-    except Exception:
-        pass
-    
     tool_name = str(kwargs.get("tool_name") or "unknown")
     args = kwargs.get("args") or {}
     session_id = str(kwargs.get("session_id") or "")
     task_id = str(kwargs.get("task_id") or "")
     tool_call_id = str(kwargs.get("tool_call_id") or "")
-    
-    # Log EVERY tool call
+
+    # Log every tool call
     _plugin_logger.info(
         "PRE_TOOL [%s] tool=%s task=%s call=%s notify=%s | args_keys=%s",
         session_id, tool_name, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
     )
-    
+
     # Redact sensitive values in args
     args_redacted = {}
     for k, v in args.items():
@@ -630,11 +620,11 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         else:
             args_redacted[k] = v
     _plugin_logger.debug("  args=%s", args_redacted)
-    
+
     # Track start time
     if session_id:
         _TOOL_CALL_TIMES[f"{session_id}:{tool_call_id}:{tool_name}"] = time.time()
-    
+
     # --- Early returns ---
     if not _NOTIFY_ENABLED:
         return
@@ -642,17 +632,12 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # --- Clarify: notify BEFORE the tool blocks ---
     # Must come BEFORE the session_id guard — in CLI mode, session_id
     # may not be populated yet, but we still want to notify.
-    if tool_name == "clarify":
-        _plugin_logger.info("  -> clarify detected: questions_in_set=%s, state_set=%s",
-                            "questions" in _NOTIFY_STATE_SET, _NOTIFY_STATE_SET)
-        if "questions" in _NOTIFY_STATE_SET:
-            _plugin_logger.info("  -> sending clarify notification")
-            title, message = _build_clarify_notification(args)
-            _plugin_logger.info("  -> pushover: title=%s", title)
-            _send_pushover_sync(title, message)
-            _plugin_logger.info("  -> pushover SENT")
-        else:
-            _plugin_logger.info("  -> SKIP: 'questions' not in _NOTIFY_STATE_SET")
+    if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
+        _plugin_logger.info("  -> sending clarify notification")
+        title, message = _build_clarify_notification(args)
+        _plugin_logger.info("  -> pushover: title=%s", title)
+        _send_pushover_sync(title, message)
+        _plugin_logger.info("  -> pushover SENT")
 
     if not session_id:
         return
@@ -669,17 +654,9 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     so the user gets notified instantly rather than after the tool times out.
 
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
-    
+
     Expected kwargs: tool_name, args, result, task_id, session_id, tool_call_id, duration_ms
     """
-    # ALWAYS log to file for debugging
-    try:
-        with open("/tmp/pushover_hook_calls.log", "a") as f:
-            f.write(f"POST_TOOL: tool={kwargs.get('tool_name')}, session={kwargs.get('session_id')}, duration={kwargs.get('duration_ms')}ms\n")
-            f.flush()
-    except Exception:
-        pass
-    
     tool_name = str(kwargs.get("tool_name") or "unknown")
     session_id = str(kwargs.get("session_id") or "")
     tool_call_id = str(kwargs.get("tool_call_id") or "")
