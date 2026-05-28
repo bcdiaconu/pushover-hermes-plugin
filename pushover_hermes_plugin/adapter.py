@@ -240,3 +240,14 @@ def register(ctx) -> None:
             "rendering. Use plain text. Pushover is fire-and-forget; do not expect a reply."
         ),
     )
+
+    # Register the pushover_test tool
+    from .tools import PUSHOVER_TEST_SCHEMA, _handle_pushover_test, _check_pushover_test_available
+    ctx.register_tool(
+        name="pushover_test",
+        toolset="pushover",
+        schema=PUSHOVER_TEST_SCHEMA,
+        handler=_handle_pushover_test,
+        check_fn=_check_pushover_test_available,
+        emoji="\U0001f514",
+    )
