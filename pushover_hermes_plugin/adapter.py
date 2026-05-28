@@ -25,8 +25,6 @@ import logging
 import os
 from typing import Any, Dict, Optional
 
-import aiohttp
-
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
@@ -192,6 +190,11 @@ class PushoverAdapter(BasePlatformAdapter):
             payload["title"] = metadata["title"]
 
         try:
+            import aiohttp
+        except ImportError:
+            return SendResult(success=False, error="aiohttp not installed")
+
+        try:
             async with aiohttp.ClientSession() as session:
                 async with session.post(PUSHOVER_API_URL, data=payload) as resp:
                     result = await resp.json()
@@ -241,13 +244,51 @@ def register(ctx) -> None:
         ),
     )
 
-    # Register the pushover_test tool
-    from .tools import PUSHOVER_TEST_SCHEMA, _handle_pushover_test, _check_pushover_test_available
-    ctx.register_tool(
-        name="pushover_test",
-        toolset="pushover",
-        schema=PUSHOVER_TEST_SCHEMA,
-        handler=_handle_pushover_test,
-        check_fn=_check_pushover_test_available,
-        emoji="\U0001f514",
+    # Register slash command /pushover-test
+    ctx.register_command(
+        "pushover-test",
+        handler=_handle_pushover_test_slash,
+        description="Send a test push notification via Pushover.",
+        args_hint="<message>",
     )
+
+
+async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
+    """Handle /pushover-test <message> — send a test push notification.
+
+    Usage:
+        /pushover-test                    — sends default test message
+        /pushover-test "Custom message"   — sends custom message
+    """
+    import json
+    import aiohttp
+
+    app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
+    user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
+
+    if not app_token or not user_key:
+        return "Pushover credentials not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY env vars."
+
+    message = raw_args.strip() or "Pushover test successful."
+    if len(message) > 1024:
+        message = message[:1021] + "..."
+
+    payload = {
+        "token": app_token,
+        "user": user_key,
+        "message": message,
+        "title": "Hermes Pushover Test",
+    }
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(PUSHOVER_API_URL, data=payload) as resp:
+                result = await resp.json()
+                if resp.status == 200 and result.get("status") == 1:
+                    return f"Pushover test sent successfully (request: {result.get('request')})"
+                errors = result.get("errors", [result.get("message", "Unknown error")])
+                return f"Pushover send failed: {errors[0]}"
+    except aiohttp.ClientError as e:
+        return f"Pushover HTTP error: {e}"
+    except Exception as e:
+        return f"Pushover error: {type(e).__name__}: {e}"
