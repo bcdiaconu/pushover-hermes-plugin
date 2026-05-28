@@ -4,6 +4,9 @@ Plugin-based gateway adapter that sends push notifications via the
 Pushover API (https://pushover.net). Outbound-only — no inbound
 message handling.
 
+Also registers agent lifecycle hooks to send Pushover notifications
+when the agent finishes processing, needs approval, or has questions.
+
 Configuration in config.yaml::
 
     gateway:
@@ -15,12 +18,13 @@ Configuration in config.yaml::
           extra:
             device: ""   # optional device filter
 
-NOTE: the field naming follows hermes PlatformConfig convention, not Pushover's
-own terminology. api_key = app token, token = user key. Env vars are the simpler
-approach and always take precedence:
-    PUSHOVER_APP_TOKEN, PUSHOVER_USER_KEY
+Lifecycle notification env vars:
+    PUSHOVER_NOTIFY_ENABLED    — "true" to enable agent lifecycle notifications
+    PUSHOVER_NOTIFY_QUESTION   — "full" (default), "summary", or "minimal"
+                                controls what question text is included
 """
 
+import asyncio
 import logging
 import os
 from typing import Any, Dict, Optional
@@ -216,6 +220,170 @@ class PushoverAdapter(BasePlatformAdapter):
         return {"name": "Pushover", "type": "user", "chat_id": self._user_key}
 
 
+# =============================================================================
+# Agent lifecycle notifications
+# =============================================================================
+# Sends Pushover notifications when the agent yields control back to the user:
+#   - post_llm_call     → agent finished processing (idle, question, or error)
+#   - pre_approval_request → agent needs command approval
+#
+# Enabled by PUSHOVER_NOTIFY_ENABLED=true.
+# Question detail controlled by PUSHOVER_NOTIFY_QUESTION:
+#   "full" (default) — include the actual question text
+#   "summary"        — include only the first line of the question
+#   "minimal"        — just "I have a question" (privacy mode)
+# =============================================================================
+
+# Env var toggles
+_NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
+_NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
+_NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
+
+
+def _send_pushover_sync(title: str, message: str) -> None:
+    """Send a Pushover notification synchronously (for sync hook handlers).
+
+    Uses ``requests`` (stdlib fallback via urllib) so hook handlers
+    don't need an async event loop.  Fires and forgets — errors are
+    silently swallowed so notifications never block the main flow.
+    """
+    app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
+    user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
+    if not app_token or not user_key:
+        return
+
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
+
+    payload = {
+        "token": app_token,
+        "user": user_key,
+        "message": message,
+        "title": title,
+    }
+    if _NOTIFY_DEVICE:
+        payload["device"] = _NOTIFY_DEVICE
+
+    try:
+        import requests as _req
+        _req.post(PUSHOVER_API_URL, data=payload, timeout=10)
+    except ImportError:
+        # Fallback to urllib if requests is not available
+        try:
+            import urllib.parse as _urp
+            import urllib.request as _ur
+            data = _urp.urlencode(payload).encode("utf-8")
+            _ur.urlopen(PUSHOVER_API_URL, data=data, timeout=10)
+        except Exception:
+            pass
+    except Exception:
+        pass  # Fire-and-forget — never block the hook
+
+
+def _is_question(response: str) -> bool:
+    """Heuristic: does the response contain a clarifying question?"""
+    if "?" in response:
+        return True
+    lower = response.lower()
+    return any(phrase in lower for phrase in [
+        "i have a question",
+        "could you clarify",
+        "can you clarify",
+        "please clarify",
+        "need clarification",
+        "which of these",
+        "please confirm",
+    ])
+
+
+def _extract_question(response: str) -> str:
+    """Extract the question text from the response."""
+    for line in response.split("\n"):
+        line = line.strip()
+        if "?" in line and len(line) > 5:
+            return line
+    return response.split("\n")[0].strip() if response.strip() else response
+
+
+def _has_error(response: str) -> bool:
+    """Heuristic: does the response indicate an error?"""
+    lower = response.lower()
+    error_indicators = [
+        "error:", "failed to", "failed:", "unable to", "cannot ",
+        "⚠️", "error occurred", "execution error",
+    ]
+    return any(ind in lower for ind in error_indicators)
+
+
+def _extract_error(response: str) -> str:
+    """Extract the error message from the response."""
+    for line in response.split("\n"):
+        line = line.strip()
+        lower = line.lower()
+        if any(ind in lower for ind in ["error:", "failed:", "unable to", "cannot "]):
+            return line
+    return response.split("\n")[0].strip()
+
+
+def _on_post_llm_call(**kwargs: Any) -> None:
+    """Hook handler: fires after each agent turn.
+
+    Sends a Pushover notification when the agent yields control back
+    to the user.  Detects: finished/idle, clarifying questions, errors.
+    """
+    if not _NOTIFY_ENABLED:
+        return
+
+    response = str(kwargs.get("assistant_response") or "")
+    if not response.strip():
+        return
+
+    # Detect notification type
+    if _is_question(response):
+        question = _extract_question(response)
+        if _NOTIFY_QUESTION == "minimal":
+            title = "Hermes — Question"
+            message = "I have a question"
+        elif _NOTIFY_QUESTION == "summary":
+            title = "Hermes — Question"
+            message = question[:200]
+        else:  # full
+            title = "Hermes — Question"
+            message = question
+    elif _has_error(response):
+        error = _extract_error(response)
+        title = "Hermes — Error"
+        message = error[:500]
+    else:
+        title = "Hermes"
+        message = "finished"
+
+    _send_pushover_sync(title, message)
+
+
+def _on_pre_approval_request(**kwargs: Any) -> None:
+    """Hook handler: fires when a dangerous command needs user approval."""
+    if not _NOTIFY_ENABLED:
+        return
+
+    command = str(kwargs.get("command") or "")
+    description = str(kwargs.get("description") or "")
+    pattern_keys = kwargs.get("pattern_keys", [])
+
+    parts = []
+    if description:
+        parts.append(description)
+    if command:
+        cmd_short = command[:200]
+        parts.append(f"Command: {cmd_short}")
+    if pattern_keys:
+        parts.append(f"Patterns: {', '.join(pattern_keys[:3])}")
+
+    message = "; ".join(parts) if parts else "A command needs your approval"
+
+    _send_pushover_sync("Hermes — Approval Needed", message)
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin loader."""
     ctx.register_platform(
@@ -251,6 +419,10 @@ def register(ctx) -> None:
         description="Send a test push notification via Pushover.",
         args_hint="<message>",
     )
+
+    # Register agent lifecycle notification hooks
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
+    ctx.register_hook("pre_approval_request", _on_pre_approval_request)
 
 
 async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
