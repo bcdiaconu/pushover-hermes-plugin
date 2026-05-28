@@ -5,7 +5,8 @@ Pushover API (https://pushover.net). Outbound-only — no inbound
 message handling.
 
 Also registers agent lifecycle hooks to send Pushover notifications
-when the agent finishes processing, needs approval, or has questions.
+when the agent finishes processing, needs approval, asks questions,
+blocks a kanban task, or needs a secret/API key.
 
 Configuration in config.yaml::
 
@@ -22,6 +23,9 @@ Lifecycle notification env vars:
     PUSHOVER_NOTIFY_ENABLED    — "true" to enable agent lifecycle notifications
     PUSHOVER_NOTIFY_QUESTION   — "full" (default), "summary", or "minimal"
                                 controls what question text is included
+    PUSHOVER_NOTIFY_STATES     — space-separated: finished, questions, errors,
+                                approvals, blockers, all (default: "all")
+    PUSHOVER_NOTIFY_DEVICE     — optional device filter for notifications
 """
 
 import asyncio
@@ -142,10 +146,10 @@ def interactive_setup() -> None:
         # Notification states
         print()
         print("  Which events should trigger notifications?")
-        print("    (space-separated: finished, questions, errors, approvals, all)")
+        print("    (space-separated: finished, questions, errors, approvals, blockers, all)")
         current_states = os.getenv("PUSHOVER_NOTIFY_STATES", "all")
         states_val = input(f"  States [{current_states}]: ").strip().lower()
-        valid_states = {"finished", "questions", "errors", "approvals", "all"}
+        valid_states = {"finished", "questions", "errors", "approvals", "blockers", "all"}
         if states_val:
             parsed = set(states_val.replace(",", " ").split())
             if parsed.issubset(valid_states):
@@ -278,8 +282,11 @@ class PushoverAdapter(BasePlatformAdapter):
 # Agent lifecycle notifications
 # =============================================================================
 # Sends Pushover notifications when the agent yields control back to the user:
-#   - post_llm_call     → agent finished processing (idle, question, or error)
-#   - pre_approval_request → agent needs command approval
+#   - post_llm_call             → agent finished processing (idle, question, or error)
+#   - pre_approval_request      → agent needs command approval
+#   - post_approval_response    → user responded to an approval request
+#   - post_tool_call (clarify)  → agent asked a clarifying question with choices
+#   - post_tool_call (kanban_block) → kanban task blocked awaiting user input
 #
 # Enabled by PUSHOVER_NOTIFY_ENABLED=true.
 # Question detail controlled by PUSHOVER_NOTIFY_QUESTION:
@@ -293,7 +300,7 @@ _NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "
 _NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
 _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
 _NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all"
-_NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals"}
+_NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals", "blockers"}
 
 
 def _send_pushover_sync(title: str, message: str) -> None:
@@ -452,6 +459,98 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
     _send_pushover_sync("Hermes — Approval Needed", message)
 
 
+def _on_post_approval_response(**kwargs: Any) -> None:
+    """Hook handler: fires after user responds to an approval request.
+
+    Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
+    """
+    if not _NOTIFY_ENABLED:
+        return
+    if "approvals" not in _NOTIFY_STATE_SET:
+        return
+
+    choice = str(kwargs.get("choice") or "")
+    if not choice:
+        return
+
+    # Only notify on non-trivial choices (allow/deny, not timeout/session)
+    if choice in {"once", "always", "deny"}:
+        command = str(kwargs.get("command") or "")
+        cmd_short = command[:80] if command else ""
+        if choice == "deny":
+            message = f"Denied: {cmd_short}"
+        elif choice == "always":
+            message = f"Always allow: {cmd_short}"
+        else:
+            message = f"Allowed once: {cmd_short}"
+        _send_pushover_sync("Hermes — Approval Response", message)
+
+
+def _on_post_tool_call(**kwargs: Any) -> None:
+    """Hook handler: fires after every tool execution.
+
+    Detects blocking tools that wait for user input:
+      - clarify: agent asked a question with optional choices
+      - kanban_block: kanban task blocked awaiting user input
+
+    Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
+    """
+    if not _NOTIFY_ENABLED:
+        return
+
+    tool_name = str(kwargs.get("tool_name") or "")
+    args = kwargs.get("args") or {}
+
+    # --- clarify ---
+    if tool_name == "clarify":
+        if "questions" not in _NOTIFY_STATE_SET:
+            return
+
+        question = str(args.get("question") or "")
+        choices = args.get("choices") or []
+        has_choices = bool(choices)
+
+        if _NOTIFY_QUESTION == "minimal":
+            title = "Hermes — Question"
+            message = "I have a question"
+        else:
+            # Build message with choices if present
+            parts = [question]
+            if has_choices:
+                for i, choice in enumerate(choices, 1):
+                    parts.append(f"  {i}. {choice[:120]}")
+                parts.append("  Other (type your answer)")
+                title = f"Hermes — Choose (/{len(choices) + 1})"
+            else:
+                title = "Hermes — Question"
+            message = "\n".join(parts)
+
+        # Truncate for Pushover
+        if len(message) > MAX_MESSAGE_LENGTH:
+            message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
+        elif _NOTIFY_QUESTION == "summary":
+            message = question[:200]
+        else:
+            pass  # full — already in message
+
+        _send_pushover_sync(title, message)
+
+    # --- kanban_block ---
+    elif tool_name == "kanban_block":
+        if "blockers" not in _NOTIFY_STATE_SET:
+            return
+
+        reason = str(args.get("reason") or "")
+        task_id = str(args.get("task_id") or "")
+        parts = []
+        if task_id:
+            parts.append(f"Task: {task_id}")
+        if reason:
+            parts.append(reason[:400])
+        message = " | ".join(parts) if parts else "Kanban task blocked — needs your input"
+        _send_pushover_sync("Hermes — Kanban Blocked", message)
+
+
 def register(ctx) -> None:
     """Plugin entry point — called by the Hermes plugin loader."""
     ctx.register_platform(
@@ -491,6 +590,8 @@ def register(ctx) -> None:
     # Register agent lifecycle notification hooks
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("pre_approval_request", _on_pre_approval_request)
+    ctx.register_hook("post_approval_response", _on_post_approval_response)
+    ctx.register_hook("post_tool_call", _on_post_tool_call)
 
 
 async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
