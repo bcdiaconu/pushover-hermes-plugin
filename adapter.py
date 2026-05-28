@@ -459,16 +459,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     """
     response = str(kwargs.get("assistant_response") or "")
     
-    # ALWAYS log to file for debugging
-    try:
-        with open("/tmp/pushover_post_llm.log", "a") as f:
-            f.write(f"POST_LLM: len={len(response)}, notify={_NOTIFY_ENABLED}\n")
-            f.write(f"  response_preview: {response[:300]}\n")
-            f.flush()
-    except Exception:
-        pass
-    
-    _plugin_logger.info("POST_LLM response_len=%d notify=%s", len(response), _NOTIFY_ENABLED)
+    _plugin_logger.info("POST_LLM response_len=%d notify=%s preview=%s", len(response), _NOTIFY_ENABLED, response[:300])
     
     if not _NOTIFY_ENABLED:
         return
