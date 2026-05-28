@@ -508,20 +508,24 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
     if "approvals" not in _NOTIFY_STATE_SET:
         return
 
+    pattern_key = str(kwargs.get("pattern_key") or "")
     command = str(kwargs.get("command") or "")
     description = str(kwargs.get("description") or "")
     pattern_keys = kwargs.get("pattern_keys", [])
 
-    parts = []
-    if description:
-        parts.append(description)
-    if command:
-        cmd_short = command[:200]
-        parts.append(f"Command: {cmd_short}")
-    if pattern_keys:
-        parts.append(f"Patterns: {', '.join(pattern_keys[:3])}")
-
-    message = "; ".join(parts) if parts else "A command needs your approval"
+    # Minimal mode: only reveal which tool needs approval, not the command
+    if _NOTIFY_QUESTION == "minimal" and pattern_key:
+        message = f"Approval required for {pattern_key}"
+    else:
+        parts = []
+        if description:
+            parts.append(description)
+        if command:
+            cmd_short = command[:200]
+            parts.append(f"Command: {cmd_short}")
+        if pattern_keys:
+            parts.append(f"Patterns: {', '.join(pattern_keys[:3])}")
+        message = "; ".join(parts) if parts else "A command needs your approval"
 
     _send_pushover_sync("Hermes — Approval Needed", message)
 
@@ -542,14 +546,24 @@ def _on_post_approval_response(**kwargs: Any) -> None:
 
     # Only notify on non-trivial choices (allow/deny, not timeout/session)
     if choice in {"once", "always", "deny"}:
+        pattern_key = str(kwargs.get("pattern_key") or "")
         command = str(kwargs.get("command") or "")
         cmd_short = command[:80] if command else ""
-        if choice == "deny":
-            message = f"Denied: {cmd_short}"
-        elif choice == "always":
-            message = f"Always allow: {cmd_short}"
+
+        if _NOTIFY_QUESTION == "minimal" and pattern_key:
+            if choice == "deny":
+                message = f"Denied: {pattern_key}"
+            elif choice == "always":
+                message = f"Always allow: {pattern_key}"
+            else:
+                message = f"Allowed once: {pattern_key}"
         else:
-            message = f"Allowed once: {cmd_short}"
+            if choice == "deny":
+                message = f"Denied: {cmd_short}"
+            elif choice == "always":
+                message = f"Always allow: {cmd_short}"
+            else:
+                message = f"Allowed once: {cmd_short}"
         _send_pushover_sync("Hermes — Approval Response", message)
 
 
