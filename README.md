@@ -10,9 +10,37 @@ A [Hermes Agent](https://github.com/benoitbeauchamp/hermes-agent) plugin that ad
 
 ## Installation
 
+### Installed via PyPI (not yet published)
+
 ```bash
 pip install pushover-hermes-plugin
 ```
+
+### Installed from source
+
+```bash
+pip install -e .
+```
+
+> **Important:** install the plugin into the **same Python environment** that runs your Hermes gateway.
+>
+> If you use the `uv`-managed tool installation (`~/.local/share/uv/tools/hermes-agent/`), target that env explicitly:
+>
+> ```bash
+> uv pip install . --python ~/.local/share/uv/tools/hermes-agent/bin/python --force-reinstall
+> ```
+>
+> If you use the git/dev installation (`~/.hermes/hermes-agent/venv/`), target that instead:
+>
+> ```bash
+> uv pip install . --python ~/.hermes/hermes-agent/venv/bin/python --force-reinstall
+> ```
+>
+> After installing, restart the gateway:
+>
+> ```bash
+> hermes gateway restart --system   # or: sudo hermes gateway restart --system
+> ```
 
 Hermes Agent discovers the plugin automatically via the `hermes_agent.plugins` entry point — no manual registration needed.
 
