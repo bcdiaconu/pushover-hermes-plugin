@@ -484,13 +484,13 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             return
         question = _extract_question(response)
         if _NOTIFY_QUESTION == "minimal":
-            title = "Hermes — Question"
+            title = "Hermes — Clarification"
             message = "I have a question"
         elif _NOTIFY_QUESTION == "summary":
-            title = "Hermes — Question"
+            title = "Hermes — Clarification"
             message = question[:200]
         else:  # full
-            title = "Hermes — Question"
+            title = "Hermes — Clarification"
             message = question
     elif _has_error(response):
         if "errors" not in _NOTIFY_STATE_SET:
@@ -573,7 +573,7 @@ def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
     has_choices = bool(choices)
 
     if _NOTIFY_QUESTION == "minimal":
-        return "Hermes — Question", "I have a question"
+        return "Hermes — Clarification", "I need clarification"
 
     # Build message with choices if present
     parts = [question]
@@ -581,9 +581,9 @@ def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
         for i, choice in enumerate(choices, 1):
             parts.append(f"  {i}. {choice[:120]}")
         parts.append("  Other (type your answer)")
-        title = f"Hermes — Choose (/{len(choices) + 1})"
+        title = f"Hermes — Clarification ({len(choices) + 1} options)"
     else:
-        title = "Hermes — Question"
+        title = "Hermes — Clarification"
     message = "\n".join(parts)
 
     # Truncate for Pushover
