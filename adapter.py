@@ -638,16 +638,19 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # --- Early returns ---
     if not _NOTIFY_ENABLED:
         return
-    if not session_id:
-        return
-    
+
     # --- Clarify: notify BEFORE the tool blocks ---
+    # Must come BEFORE the session_id guard — in CLI mode, session_id
+    # may not be populated yet, but we still want to notify.
     if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
         _plugin_logger.info("  -> sending clarify notification")
         title, message = _build_clarify_notification(args)
         _plugin_logger.info("  -> pushover: title=%s", title)
         _send_pushover_sync(title, message)
         _plugin_logger.info("  -> pushover SENT")
+
+    if not session_id:
+        return
 
 
 def _on_post_tool_call(**kwargs: Any) -> None:
