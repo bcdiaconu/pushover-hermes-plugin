@@ -1,4 +1,4 @@
-name: pushover-platform
+name: pushover-hermes-plugin
 kind: platform
 version: 1.0.0
 description: >

@@ -10,39 +10,41 @@ A [Hermes Agent](https://github.com/benoitbeauchamp/hermes-agent) plugin that ad
 
 ## Installation
 
-### Installed via PyPI (not yet published)
+### From a remote Git repository
 
 ```bash
-pip install pushover-hermes-plugin
+hermes plugins install user/repo --enable
 ```
 
-### Installed from source
+### From a local clone (development)
 
 ```bash
-pip install -e .
+git clone https://github.com/user/pushover-hermes-plugin.git
+cd pushover-hermes-plugin
+hermes plugins install file://$(pwd) --enable
 ```
 
-> **Important:** install the plugin into the **same Python environment** that runs your Hermes gateway.
->
-> If you use the `uv`-managed tool installation (`~/.local/share/uv/tools/hermes-agent/`), target that env explicitly:
->
-> ```bash
-> uv pip install . --python ~/.local/share/uv/tools/hermes-agent/bin/python --force-reinstall
-> ```
->
-> If you use the git/dev installation (`~/.hermes/hermes-agent/venv/`), target that instead:
->
-> ```bash
-> uv pip install . --python ~/.hermes/hermes-agent/venv/bin/python --force-reinstall
-> ```
->
-> After installing, restart the gateway:
->
-> ```bash
-> hermes gateway restart --system   # or: sudo hermes gateway restart --system
-> ```
+This installs the plugin and enables it in a single step. To install without enabling:
 
-Hermes Agent discovers the plugin automatically via the `hermes_agent.plugins` entry point — no manual registration needed.
+```bash
+hermes plugins install file://$(pwd) --no-enable
+```
+
+### Other plugin management commands
+
+```bash
+hermes plugins list                                  # table: enabled / disabled / not enabled
+hermes plugins enable pushover-hermes-plugin         # add to allow-list
+hermes plugins disable pushover-hermes-plugin        # remove from allow-list
+hermes plugins update pushover-hermes-plugin         # pull latest
+hermes plugins remove pushover-hermes-plugin         # uninstall
+```
+
+After installing, restart the gateway:
+
+```bash
+hermes gateway restart --system   # or: sudo hermes gateway restart --system
+```
 
 ## Configuration
 

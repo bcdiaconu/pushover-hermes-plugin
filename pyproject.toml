@@ -23,4 +23,4 @@ dependencies = ["aiohttp>=3.9"]
 notify = ["requests>=2.28"]
 
 [project.entry-points."hermes_agent.plugins"]
-pushover-platform = "adapter"
+pushover-hermes-plugin = "adapter"
