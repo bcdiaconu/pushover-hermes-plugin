@@ -1,4 +1,9 @@
-"""Marker file — project root is not a Python package.
+"""Pushover platform plugin for Hermes Agent.
 
-The importable package is ``pushover_hermes_plugin/``.
+Entry point for both user plugin loader (hermes plugins install)
+and pip-installed entry-point discovery.
 """
+
+from .adapter import register
+
+__all__ = ["register"]

@@ -31,12 +31,35 @@ Lifecycle notification env vars:
 import asyncio
 import logging
 import os
+import time
+from pathlib import Path
 from typing import Any, Dict, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 logger = logging.getLogger(__name__)
+# Enable debug logging for pushover plugin during troubleshooting
+# Set PUSHOVER_DEBUG=1 in .env or uncomment next line
+# logger.setLevel(logging.DEBUG)
+
+# Dedicated plugin logger — writes to ~/.hermes/logs/pushover_hermes_plugin.log
+_PLUGIN_LOG_DIR = Path.home() / ".hermes" / "logs"
+_PLUGIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
+_plugin_logger = logging.getLogger("pushover_plugin")
+_plugin_logger.setLevel(logging.DEBUG)
+_plugin_handler = logging.FileHandler(_PLUGIN_LOG_DIR / "pushover_hermes_plugin.log", mode='a')
+_plugin_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+_plugin_logger.addHandler(_plugin_handler)
+
+# Log module load — to stderr for visibility and to file
+import sys
+sys.stderr.write(f"[PUSHOVER_PLUGIN] Module loaded, home={Path.home()}, log_dir={_PLUGIN_LOG_DIR}\n")
+sys.stderr.flush()
+_plugin_logger.info("=== MODULE LOADED — home=%s ===", Path.home())
+
+# Track tool call start times for timing analysis
+_TOOL_CALL_TIMES: Dict[str, float] = {}
 
 PUSHOVER_API_URL = "https://api.pushover.net/1/messages.json"
 MAX_MESSAGE_LENGTH = 1024
@@ -273,6 +296,45 @@ class PushoverAdapter(BasePlatformAdapter):
         content = f"{caption}\n\n{image_url}" if caption else image_url
         return await self.send(chat_id, content)
 
+    async def send_clarify(
+        self,
+        chat_id: str,
+        question: str,
+        choices: Optional[list],
+        clarify_id: str,
+        session_key: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send a clarify prompt to the user.
+
+        Override to send Pushover notification BEFORE the tool blocks.
+        """
+        logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
+                     question[:50], choices, _NOTIFY_ENABLED)
+        logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
+
+        # Send notification for clarify questions
+        if _NOTIFY_ENABLED and "questions" in _NOTIFY_STATE_SET:
+            logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
+            title, message = _build_clarify_notification({"question": question, "choices": choices or []})
+            logger.info("send_clarify: sending pushover notification: title=%s", title)
+            _send_pushover_sync(title, message)
+            logger.info("send_clarify: pushover notification sent")
+        else:
+            logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
+                        _NOTIFY_ENABLED, "questions" in _NOTIFY_STATE_SET)
+
+        # Call parent to actually send the clarify prompt
+        logger.info("send_clarify: calling parent send_clarify")
+        return await super().send_clarify(
+            chat_id=chat_id,
+            question=question,
+            choices=choices,
+            clarify_id=clarify_id,
+            session_key=session_key,
+            metadata=metadata,
+        )
+
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         # BasePlatformAdapter.get_chat_info is abstract AND async — must match signature.
         return {"name": "Pushover", "type": "user", "chat_id": self._user_key}
@@ -395,16 +457,30 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     to the user.  Detects: finished/idle, clarifying questions, errors.
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
+    response = str(kwargs.get("assistant_response") or "")
+    
+    # ALWAYS log to file for debugging
+    try:
+        with open("/tmp/pushover_post_llm.log", "a") as f:
+            f.write(f"POST_LLM: len={len(response)}, notify={_NOTIFY_ENABLED}\n")
+            f.write(f"  response_preview: {response[:300]}\n")
+            f.flush()
+    except Exception:
+        pass
+    
+    _plugin_logger.info("POST_LLM response_len=%d notify=%s", len(response), _NOTIFY_ENABLED)
+    
     if not _NOTIFY_ENABLED:
         return
 
-    response = str(kwargs.get("assistant_response") or "")
     if not response.strip():
         return
 
     # Detect notification type and check state filter
     if _is_question(response):
+        _plugin_logger.info("  -> detected: question")
         if "questions" not in _NOTIFY_STATE_SET:
+            _plugin_logger.info("  -> skipped: questions not in state set")
             return
         question = _extract_question(response)
         if _NOTIFY_QUESTION == "minimal":
@@ -486,57 +562,146 @@ def _on_post_approval_response(**kwargs: Any) -> None:
         _send_pushover_sync("Hermes — Approval Response", message)
 
 
+def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
+    """Build (title, message) for a clarify notification.
+
+    Returns the formatted title and message for a Pushover notification
+    based on the clarify tool arguments.
+    """
+    question = str(args.get("question") or "")
+    choices = args.get("choices") or []
+    has_choices = bool(choices)
+
+    if _NOTIFY_QUESTION == "minimal":
+        return "Hermes — Question", "I have a question"
+
+    # Build message with choices if present
+    parts = [question]
+    if has_choices:
+        for i, choice in enumerate(choices, 1):
+            parts.append(f"  {i}. {choice[:120]}")
+        parts.append("  Other (type your answer)")
+        title = f"Hermes — Choose (/{len(choices) + 1})"
+    else:
+        title = "Hermes — Question"
+    message = "\n".join(parts)
+
+    # Truncate for Pushover
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
+    elif _NOTIFY_QUESTION == "summary":
+        message = question[:200]
+
+    return title, message
+
+
+def _on_pre_tool_call(**kwargs: Any) -> None:
+    """Hook handler: fires BEFORE every tool execution.
+    
+    Logs ALL tool calls to plugin log for debugging.
+    
+    Expected kwargs: tool_name, args, task_id, session_id, tool_call_id
+    """
+    # ALWAYS log to file for debugging - bypass logger entirely
+    try:
+        with open("/tmp/pushover_hook_calls.log", "a") as f:
+            f.write(f"PRE_TOOL: {kwargs}\n")
+            f.flush()
+    except Exception:
+        pass
+    
+    tool_name = str(kwargs.get("tool_name") or "unknown")
+    args = kwargs.get("args") or {}
+    session_id = str(kwargs.get("session_id") or "")
+    task_id = str(kwargs.get("task_id") or "")
+    tool_call_id = str(kwargs.get("tool_call_id") or "")
+    
+    # Log EVERY tool call
+    _plugin_logger.info(
+        "PRE_TOOL [%s] tool=%s task=%s call=%s notify=%s | args_keys=%s",
+        session_id, tool_name, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
+    )
+    
+    # Redact sensitive values in args
+    args_redacted = {}
+    for k, v in args.items():
+        if k in ("api_key", "token", "password", "secret", "content"):
+            args_redacted[k] = f"<{type(v).__name__}:{len(str(v))}>"
+        else:
+            args_redacted[k] = v
+    _plugin_logger.debug("  args=%s", args_redacted)
+    
+    # Track start time
+    if session_id:
+        _TOOL_CALL_TIMES[f"{session_id}:{tool_call_id}:{tool_name}"] = time.time()
+    
+    # --- Early returns ---
+    if not _NOTIFY_ENABLED:
+        return
+    if not session_id:
+        return
+    
+    # --- Clarify: notify BEFORE the tool blocks ---
+    if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
+        _plugin_logger.info("  -> sending clarify notification")
+        title, message = _build_clarify_notification(args)
+        _plugin_logger.info("  -> pushover: title=%s", title)
+        _send_pushover_sync(title, message)
+        _plugin_logger.info("  -> pushover SENT")
+
+
 def _on_post_tool_call(**kwargs: Any) -> None:
     """Hook handler: fires after every tool execution.
 
+    Logs ALL tool completions to plugin log with timing analysis.
     Detects blocking tools that wait for user input:
-      - clarify: agent asked a question with optional choices
       - kanban_block: kanban task blocked awaiting user input
 
+    Note: clarify notifications are handled by _on_pre_tool_call instead,
+    so the user gets notified instantly rather than after the tool times out.
+
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
+    
+    Expected kwargs: tool_name, args, result, task_id, session_id, tool_call_id, duration_ms
     """
+    # ALWAYS log to file for debugging
+    try:
+        with open("/tmp/pushover_hook_calls.log", "a") as f:
+            f.write(f"POST_TOOL: tool={kwargs.get('tool_name')}, session={kwargs.get('session_id')}, duration={kwargs.get('duration_ms')}ms\n")
+            f.flush()
+    except Exception:
+        pass
+    
+    tool_name = str(kwargs.get("tool_name") or "unknown")
+    session_id = str(kwargs.get("session_id") or "")
+    tool_call_id = str(kwargs.get("tool_call_id") or "")
+    duration_ms = kwargs.get("duration_ms")
+    
+    # Log completion with timing
+    if session_id:
+        key = f"{session_id}:{tool_call_id}:{tool_name}"
+        start = _TOOL_CALL_TIMES.pop(key, None)
+        if start:
+            elapsed = time.time() - start
+            _plugin_logger.info(
+                "POST_TOOL [%s] tool=%s call=%s duration_ms=%s elapsed=%.2fs",
+                session_id, tool_name, tool_call_id, duration_ms, elapsed
+            )
+        else:
+            _plugin_logger.info(
+                "POST_TOOL [%s] tool=%s call=%s duration_ms=%s (no pre-timing)",
+                session_id, tool_name, tool_call_id, duration_ms
+            )
+    else:
+        _plugin_logger.info("POST_TOOL tool=%s (no session_id)", tool_name)
+    
     if not _NOTIFY_ENABLED:
         return
 
-    tool_name = str(kwargs.get("tool_name") or "")
     args = kwargs.get("args") or {}
 
-    # --- clarify ---
-    if tool_name == "clarify":
-        if "questions" not in _NOTIFY_STATE_SET:
-            return
-
-        question = str(args.get("question") or "")
-        choices = args.get("choices") or []
-        has_choices = bool(choices)
-
-        if _NOTIFY_QUESTION == "minimal":
-            title = "Hermes — Question"
-            message = "I have a question"
-        else:
-            # Build message with choices if present
-            parts = [question]
-            if has_choices:
-                for i, choice in enumerate(choices, 1):
-                    parts.append(f"  {i}. {choice[:120]}")
-                parts.append("  Other (type your answer)")
-                title = f"Hermes — Choose (/{len(choices) + 1})"
-            else:
-                title = "Hermes — Question"
-            message = "\n".join(parts)
-
-        # Truncate for Pushover
-        if len(message) > MAX_MESSAGE_LENGTH:
-            message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
-        elif _NOTIFY_QUESTION == "summary":
-            message = question[:200]
-        else:
-            pass  # full — already in message
-
-        _send_pushover_sync(title, message)
-
     # --- kanban_block ---
-    elif tool_name == "kanban_block":
+    if tool_name == "kanban_block":
         if "blockers" not in _NOTIFY_STATE_SET:
             return
 
@@ -591,7 +756,16 @@ def register(ctx) -> None:
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("pre_approval_request", _on_pre_approval_request)
     ctx.register_hook("post_approval_response", _on_post_approval_response)
+    ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
+    
+    # Log registration confirmation
+    _plugin_logger.info("=== Plugin hooks registered successfully ===")
+    _plugin_logger.info("  post_llm_call: %s", _on_post_llm_call.__name__)
+    _plugin_logger.info("  pre_approval_request: %s", _on_pre_approval_request.__name__)
+    _plugin_logger.info("  post_approval_response: %s", _on_post_approval_response.__name__)
+    _plugin_logger.info("  pre_tool_call: %s", _on_pre_tool_call.__name__)
+    _plugin_logger.info("  post_tool_call: %s", _on_post_tool_call.__name__)
 
 
 async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
