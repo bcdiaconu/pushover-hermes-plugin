@@ -450,6 +450,28 @@ def _extract_error(response: str) -> str:
     return response.split("\n")[0].strip()
 
 
+def _notify_message(minimal: str, summary: str, full: str) -> str:
+    """Select message text based on verbosity setting.
+
+    Ensures consistent behaviour across all notification types —
+    prevents bugs where a notification type forgets to respect
+    PUSHOVER_NOTIFY_QUESTION.
+
+    Args:
+        minimal: Shorthand / privacy-safe message (no sensitive content).
+        summary: Abbreviated message (truncated to ~200 chars).
+        full: Complete message.
+
+    Returns:
+        The message appropriate for the current verbosity level.
+    """
+    if _NOTIFY_QUESTION == "minimal":
+        return minimal
+    if _NOTIFY_QUESTION == "summary":
+        return summary
+    return full
+
+
 def _on_post_llm_call(**kwargs: Any) -> None:
     """Hook handler: fires after each agent turn.
 
@@ -458,9 +480,10 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
     response = str(kwargs.get("assistant_response") or "")
-    
-    _plugin_logger.info("POST_LLM response_len=%d notify=%s preview=%s", len(response), _NOTIFY_ENABLED, response[:300])
-    
+
+    _plugin_logger.info("POST_LLM response_len=%d notify=%s preview=%s",
+                        len(response), _NOTIFY_ENABLED, response[:300])
+
     if not _NOTIFY_ENABLED:
         return
 
@@ -474,26 +497,31 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             _plugin_logger.info("  -> skipped: questions not in state set")
             return
         question = _extract_question(response)
-        if _NOTIFY_QUESTION == "minimal":
-            title = "Hermes — Question"
-            message = "I have a question"
-        elif _NOTIFY_QUESTION == "summary":
-            title = "Hermes — Question"
-            message = question[:200]
-        else:  # full
-            title = "Hermes — Question"
-            message = question
+        title = "Hermes — Question"
+        message = _notify_message(
+            minimal="I have a question",
+            summary=question[:200],
+            full=question,
+        )
     elif _has_error(response):
         if "errors" not in _NOTIFY_STATE_SET:
             return
         error = _extract_error(response)
         title = "Hermes — Error"
-        message = error[:500]
+        message = _notify_message(
+            minimal="An error occurred",
+            summary=error[:200],
+            full=error[:500],
+        )
     else:
         if "finished" not in _NOTIFY_STATE_SET:
             return
         title = "Hermes"
-        message = "finished"
+        message = _notify_message(
+            minimal="Finished",
+            summary="Finished",
+            full="Finished",
+        )
 
     _send_pushover_sync(title, message)
 
@@ -513,19 +541,22 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
     description = str(kwargs.get("description") or "")
     pattern_keys = kwargs.get("pattern_keys", [])
 
-    # Minimal mode: only reveal which tool needs approval, not the command
-    if _NOTIFY_QUESTION == "minimal" and pattern_key:
-        message = f"Approval required for {pattern_key}"
-    else:
-        parts = []
-        if description:
-            parts.append(description)
-        if command:
-            cmd_short = command[:200]
-            parts.append(f"Command: {cmd_short}")
-        if pattern_keys:
-            parts.append(f"Patterns: {', '.join(pattern_keys[:3])}")
-        message = "; ".join(parts) if parts else "A command needs your approval"
+    # Build detailed message for summary/full
+    parts = []
+    if description:
+        parts.append(description)
+    if command:
+        cmd_short = command[:200]
+        parts.append(f"Command: {cmd_short}")
+    if pattern_keys:
+        parts.append(f"Patterns: {', '.join(pattern_keys[:3])}")
+    detailed = "; ".join(parts) if parts else "A command needs your approval"
+
+    message = _notify_message(
+        minimal=f"Approval required for {pattern_key}" if pattern_key else "Approval required",
+        summary=detailed,
+        full=detailed,
+    )
 
     _send_pushover_sync("Hermes — Approval Needed", message)
 
@@ -550,20 +581,12 @@ def _on_post_approval_response(**kwargs: Any) -> None:
         command = str(kwargs.get("command") or "")
         cmd_short = command[:80] if command else ""
 
-        if _NOTIFY_QUESTION == "minimal" and pattern_key:
-            if choice == "deny":
-                message = f"Denied: {pattern_key}"
-            elif choice == "always":
-                message = f"Always allow: {pattern_key}"
-            else:
-                message = f"Allowed once: {pattern_key}"
-        else:
-            if choice == "deny":
-                message = f"Denied: {cmd_short}"
-            elif choice == "always":
-                message = f"Always allow: {cmd_short}"
-            else:
-                message = f"Allowed once: {cmd_short}"
+        verb = {"deny": "Denied", "always": "Always allow", "once": "Allowed once"}[choice]
+        message = _notify_message(
+            minimal=f"{verb}: {pattern_key}" if pattern_key else verb,
+            summary=f"{verb}: {cmd_short}",
+            full=f"{verb}: {cmd_short}",
+        )
         _send_pushover_sync("Hermes — Approval Response", message)
 
 
@@ -577,10 +600,7 @@ def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
     choices = args.get("choices") or []
     has_choices = bool(choices)
 
-    if _NOTIFY_QUESTION == "minimal":
-        return "Hermes — Clarification", "I need clarification"
-
-    # Build message with choices if present
+    # Build detailed message with choices
     parts = [question]
     if has_choices:
         for i, choice in enumerate(choices, 1):
@@ -589,13 +609,17 @@ def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
         title = f"Hermes — Clarification ({len(choices) + 1} options)"
     else:
         title = "Hermes — Clarification"
-    message = "\n".join(parts)
+    detailed = "\n".join(parts)
 
     # Truncate for Pushover
-    if len(message) > MAX_MESSAGE_LENGTH:
-        message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
-    elif _NOTIFY_QUESTION == "summary":
-        message = question[:200]
+    if len(detailed) > MAX_MESSAGE_LENGTH:
+        detailed = detailed[: MAX_MESSAGE_LENGTH - 3] + "..."
+
+    message = _notify_message(
+        minimal="I need clarification",
+        summary=question[:200],
+        full=detailed,
+    )
 
     return title, message
 
