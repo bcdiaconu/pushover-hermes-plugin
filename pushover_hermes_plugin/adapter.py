@@ -55,12 +55,16 @@ def check_requirements() -> bool:
 
 
 def validate_config(config) -> bool:
-    """Check whether Pushover is configured via config.yaml.
+    """Check whether Pushover is configured via env vars or config.yaml.
 
-    This function checks config.yaml fields ONLY — NOT env vars.
-    Env var precedence is handled by ``is_connected()`` and the adapter
-    constructor.
+    Returns True if _any_ credential source is available. Adapter creation
+    should not be blocked for an outbound-only platform — missing credentials
+    are caught gracefully in send().
     """
+    # Env vars always take precedence.
+    if os.getenv("PUSHOVER_APP_TOKEN", "").strip() and os.getenv("PUSHOVER_USER_KEY", "").strip():
+        return True
+    # Fall back to config.yaml fields.
     token = getattr(config, "token", "") or ""
     api_key = getattr(config, "api_key", "") or ""
     return bool(token and api_key)
@@ -216,7 +220,9 @@ def register(ctx) -> None:
         label="Pushover",
         adapter_factory=PushoverAdapter,
         check_fn=check_requirements,
-        validate_config=validate_config,
+        # No validate_config — this is outbound-only. The adapter checks
+        # credentials in send() and returns a descriptive SendResult error
+        # if they're missing. Blocking adapter creation here is unnecessary.
         is_connected=is_connected,
         required_env=["PUSHOVER_APP_TOKEN", "PUSHOVER_USER_KEY"],
         install_hint="pip install aiohttp",  # shown only if aiohttp is missing
