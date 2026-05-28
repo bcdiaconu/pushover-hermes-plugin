@@ -1,4 +1,4 @@
-"""Pushover platform adapter — outbound push notifications."""
-from .pushover_hermes_plugin import register
+"""Marker file — project root is not a Python package.
 
-__all__ = ["register"]
+The importable package is ``pushover_hermes_plugin/``.
+"""

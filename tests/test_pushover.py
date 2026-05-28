@@ -81,17 +81,23 @@ class TestIsConnected:
 # ---------------------------------------------------------------------------
 
 class TestValidateConfig:
+    """validate_config() checks ONLY config.yaml fields, NOT env vars."""
+
     def test_false_when_empty(self):
-        assert validate_config(PlatformConfig(enabled=True)) is False
+        with patch.dict("os.environ", {}, clear=True):
+            assert validate_config(PlatformConfig(enabled=True)) is False
 
     def test_false_when_only_api_key(self):
-        assert validate_config(PlatformConfig(enabled=True, api_key="tok")) is False
+        with patch.dict("os.environ", {}, clear=True):
+            assert validate_config(PlatformConfig(enabled=True, api_key="tok")) is False
 
     def test_false_when_only_token(self):
-        assert validate_config(PlatformConfig(enabled=True, token="key")) is False
+        with patch.dict("os.environ", {}, clear=True):
+            assert validate_config(PlatformConfig(enabled=True, token="key")) is False
 
     def test_true_when_both_set(self):
-        assert validate_config(PlatformConfig(enabled=True, api_key="tok", token="key")) is True
+        with patch.dict("os.environ", {}, clear=True):
+            assert validate_config(PlatformConfig(enabled=True, api_key="tok", token="key")) is True
 
 
 # ---------------------------------------------------------------------------
