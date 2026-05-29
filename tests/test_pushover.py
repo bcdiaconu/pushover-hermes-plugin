@@ -442,7 +442,7 @@ class TestNotificationStateFiltering:
             sent.append((title, msg))
 
         mod._NOTIFY_STATES = states.lower()
-        mod._NOTIFY_STATE_SET = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "approvals"}
+        mod._NOTIFY_STATE_SET = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
         mod._NOTIFY_ENABLED = True
 
         try:

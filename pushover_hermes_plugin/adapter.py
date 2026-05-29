@@ -182,15 +182,24 @@ def interactive_setup() -> None:
         # Notification states
         print()
         print("  Which events should trigger notifications?")
-        print("    (space-separated: finished, questions, errors, approvals, blockers, all)")
+        print("    (space-separated: finished, questions, errors, pre-approval, post-approval, blockers)")
+        print("    Presets:")
+        print("      all    — everything including post-approval")
+        print("      usual  — common events (excludes post-approval, the noisy one)")
         current_states = os.getenv("PUSHOVER_NOTIFY_STATES", "all")
-        states_val = input(f"  States [{current_states}]: ").strip().lower()
-        valid_states = {"finished", "questions", "errors", "approvals", "blockers", "all"}
+        states_val = input(f"  States [{current_states}]: ").strip()
+        valid_states = {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers", "all", "usual"}
         if states_val:
             parsed = set(states_val.replace(",", " ").split())
             if parsed.issubset(valid_states):
-                if "all" in parsed:
+                if parsed == {"all"}:
                     updates["PUSHOVER_NOTIFY_STATES"] = "all"
+                elif parsed == {"usual"}:
+                    updates["PUSHOVER_NOTIFY_STATES"] = "usual"
+                elif "all" in parsed or "usual" in parsed:
+                    parsed.discard("all")
+                    parsed.discard("usual")
+                    updates["PUSHOVER_NOTIFY_STATES"] = " ".join(sorted(parsed))
                 else:
                     updates["PUSHOVER_NOTIFY_STATES"] = " ".join(sorted(parsed))
             else:
@@ -374,8 +383,18 @@ class PushoverAdapter(BasePlatformAdapter):
 _NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
 _NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
 _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
-_NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all"
-_NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals", "blockers"}
+_NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all" or "usual"
+# "usual" preset: all common states except post-approval (exceptional, noisy)
+_USUAL_STATE_SET = {"finished", "questions", "errors", "pre-approval", "blockers"}
+_NOTIFY_STATE_SET = (
+    set(_NOTIFY_STATES.split())
+    if _NOTIFY_STATES not in {"all", "usual"}
+    else (
+        _USUAL_STATE_SET
+        if _NOTIFY_STATES == "usual"
+        else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
+    )
+)
 
 
 # Log initialization state to dedicated file (will appear once module is loaded)
@@ -602,15 +621,15 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
     _plugin_logger.debug(
-        "PRE_APPROVAL pattern=%s command=%s notify=%s approvals_in_set=%s",
+        "PRE_APPROVAL pattern=%s command=%s notify=%s pre_approval_in_set=%s",
         kwargs.get("pattern_key"),
         (kwargs.get("command") or "")[:80],
         _NOTIFY_ENABLED,
-        "approvals" in _NOTIFY_STATE_SET,
+        "pre-approval" in _NOTIFY_STATE_SET,
     )
     if not _NOTIFY_ENABLED:
         return
-    if "approvals" not in _NOTIFY_STATE_SET:
+    if "pre-approval" not in _NOTIFY_STATE_SET:
         return
 
     pattern_key = str(kwargs.get("pattern_key") or "")
@@ -642,10 +661,12 @@ def _on_post_approval_response(**kwargs: Any) -> None:
     """Hook handler: fires after user responds to an approval request.
 
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
+    Post-approval is NOT included in the "usual" preset — only enabled
+    explicitly when the user wants notification on every approval response.
     """
     if not _NOTIFY_ENABLED:
         return
-    if "approvals" not in _NOTIFY_STATE_SET:
+    if "post-approval" not in _NOTIFY_STATE_SET:
         return
 
     choice = str(kwargs.get("choice") or "")
