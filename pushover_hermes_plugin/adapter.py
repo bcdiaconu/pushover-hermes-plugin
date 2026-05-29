@@ -26,6 +26,8 @@ Lifecycle notification env vars:
     PUSHOVER_NOTIFY_STATES     — space-separated: finished, questions, errors,
                                 approvals, blockers, all (default: "all")
     PUSHOVER_NOTIFY_DEVICE     — optional device filter for notifications
+    PUSHOVER_LOG_LEVEL         — logging level override: DEBUG, INFO, WARNING,
+                                ERROR. Defaults to logging.level from config.yaml.
 """
 
 import atexit
@@ -41,15 +43,26 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
 logger = logging.getLogger(__name__)
-# Enable debug logging for pushover plugin during troubleshooting
-# Set PUSHOVER_DEBUG=1 in .env or uncomment next line
-# logger.setLevel(logging.DEBUG)
 
 # Dedicated plugin logger — writes to ~/.hermes/logs/pushover_hermes_plugin.log
 _PLUGIN_LOG_DIR = Path.home() / ".hermes" / "logs"
 _PLUGIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
 _plugin_logger = logging.getLogger("pushover_plugin")
-_plugin_logger.setLevel(logging.DEBUG)
+
+# Resolve log level: env var override > config.yaml logging.level > INFO
+_plugin_log_level = os.getenv("PUSHOVER_LOG_LEVEL", "").upper()
+if not _plugin_log_level:
+    try:
+        from hermes_cli.config import load_config as _load_hermes_config
+        _cfg = _load_hermes_config()
+        _lvl = (_cfg.get("logging") or {}).get("level", "")
+        if _lvl:
+            _plugin_log_level = str(_lvl).upper()
+    except Exception:
+        pass
+if not _plugin_log_level:
+    _plugin_log_level = "INFO"
+_plugin_logger.setLevel(getattr(logging, _plugin_log_level, logging.INFO))
 _plugin_handler = logging.FileHandler(_PLUGIN_LOG_DIR / "pushover_hermes_plugin.log", mode='a')
 _plugin_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
 _plugin_logger.addHandler(_plugin_handler)
@@ -57,7 +70,7 @@ _plugin_logger.addHandler(_plugin_handler)
 # Log module load — to stderr for visibility and to file
 sys.stderr.write(f"[PUSHOVER_PLUGIN] Module loaded, home={Path.home()}, log_dir={_PLUGIN_LOG_DIR}\n")
 sys.stderr.flush()
-_plugin_logger.info("=== MODULE LOADED — home=%s ===", Path.home())
+_plugin_logger.info("=== MODULE LOADED — home=%s, log_level=%s ===", Path.home(), _plugin_log_level)
 
 # Track tool call start times for timing analysis
 _TOOL_CALL_TIMES: Dict[str, float] = {}

@@ -87,6 +87,29 @@ export PUSHOVER_ALLOWED_USERS=user_key_1,user_key_2   # comma-separated
 export PUSHOVER_ALLOW_ALL_USERS=true                  # disable restriction
 ```
 
+## Logging
+
+Plugin logs are written to `~/.hermes/logs/pushover_hermes_plugin.log`.
+
+The log level defaults to `logging.level` from `~/.hermes/config.yaml`:
+
+```yaml
+logging:
+  level: DEBUG   # inherited by pushover plugin
+```
+
+To override only for this plugin (useful for verbose debug without affecting other logs):
+
+```bash
+export PUSHOVER_LOG_LEVEL=DEBUG
+```
+
+After changing the log level, restart the gateway:
+
+```bash
+hermes gateway restart --system
+```
+
 ## Behaviour
 
 - Messages are truncated to 1024 characters (Pushover API limit)
