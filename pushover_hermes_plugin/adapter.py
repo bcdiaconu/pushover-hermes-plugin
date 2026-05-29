@@ -42,8 +42,6 @@ from typing import Any, Dict, Optional
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
 
-logger = logging.getLogger(__name__)
-
 # Dedicated plugin logger — writes to ~/.hermes/logs/pushover_hermes_plugin.log
 _PLUGIN_LOG_DIR = Path.home() / ".hermes" / "logs"
 _PLUGIN_LOG_DIR.mkdir(parents=True, exist_ok=True)
@@ -308,10 +306,10 @@ class PushoverAdapter(BasePlatformAdapter):
                     if resp.status == 200 and result.get("status") == 1:
                         return SendResult(success=True, message_id=result.get("request"))
                     errors = result.get("errors", [result.get("message", "Unknown error")])
-                    logger.error("Pushover send failed: %s", errors[0])
+                    _plugin_logger.error("Pushover send failed: %s", errors[0])
                     return SendResult(success=False, error=str(errors[0]))
         except aiohttp.ClientError as e:
-            logger.error("Pushover HTTP error: %s", e)
+            _plugin_logger.error("Pushover HTTP error: %s", e)
             return SendResult(success=False, error=str(e))
 
     async def send_image(self, chat_id: str, image_url: str, caption: str = "") -> SendResult:
@@ -331,23 +329,23 @@ class PushoverAdapter(BasePlatformAdapter):
 
         Override to send Pushover notification BEFORE the tool blocks.
         """
-        logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
+        _plugin_logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
                     question[:50], choices, _NOTIFY_ENABLED)
-        logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
+        _plugin_logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
 
         # Send notification for clarify questions
         if _NOTIFY_ENABLED and "questions" in _NOTIFY_STATE_SET:
-            logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
+            _plugin_logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
             title, message = _build_clarify_notification({"question": question, "choices": choices or []})
-            logger.info("send_clarify: sending pushover notification: title=%s", title)
+            _plugin_logger.info("send_clarify: sending pushover notification: title=%s", title)
             _send_pushover_notification(title, message)
-            logger.info("send_clarify: pushover notification sent")
+            _plugin_logger.info("send_clarify: pushover notification sent")
         else:
-            logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
+            _plugin_logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
                         _NOTIFY_ENABLED, "questions" in _NOTIFY_STATE_SET)
 
         # Call parent to actually send the clarify prompt
-        logger.info("send_clarify: calling parent send_clarify")
+        _plugin_logger.info("send_clarify: calling parent send_clarify")
         return await super().send_clarify(
             chat_id=chat_id,
             question=question,
