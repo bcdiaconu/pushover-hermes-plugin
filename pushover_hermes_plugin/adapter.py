@@ -371,7 +371,7 @@ def _log_notify_init():
         "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
         _NOTIFY_ENABLED, _NOTIFY_QUESTION, _NOTIFY_DEVICE, _NOTIFY_STATES, _NOTIFY_STATE_SET
     )
-    _plugin_logger.info("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
+    _plugin_logger.debug("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
                         bool(os.getenv("PUSHOVER_APP_TOKEN")), bool(os.getenv("PUSHOVER_USER_KEY")),
                         "SUDO_PASSWORD" in os.environ)
 
@@ -529,14 +529,14 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     response = str(kwargs.get("assistant_response") or "")
 
     # Diagnostic: log ALL kwargs keys and types to understand hook interface
-    _plugin_logger.info("POST_LLM kwargs=%s", list(kwargs.keys()))
+    _plugin_logger.debug("POST_LLM kwargs=%s", list(kwargs.keys()))
     for k, v in kwargs.items():
         if k == "assistant_response":
             continue  # already logged separately
         v_repr = repr(v) if len(repr(v)) < 200 else repr(v)[:200] + "..."
-        _plugin_logger.info("  kwargs[%s] = %s (type=%s)", k, v_repr, type(v).__name__)
+        _plugin_logger.debug("  kwargs[%s] = %s (type=%s)", k, v_repr, type(v).__name__)
 
-    _plugin_logger.info("POST_LLM response_len=%d notify=%s preview=%s",
+    _plugin_logger.debug("POST_LLM response_len=%d notify=%s preview=%s",
                         len(response), _NOTIFY_ENABLED, response[:300])
 
     if not _NOTIFY_ENABLED:
@@ -547,9 +547,9 @@ def _on_post_llm_call(**kwargs: Any) -> None:
 
     # Detect notification type and check state filter
     if _is_question(response):
-        _plugin_logger.info("  -> detected: question")
+        _plugin_logger.debug("  -> detected: question")
         if "questions" not in _NOTIFY_STATE_SET:
-            _plugin_logger.info("  -> skipped: questions not in state set")
+            _plugin_logger.warning("  -> skipped: questions not in state set")
             return
         question = _extract_question(response)
         title = "Hermes — Question"
@@ -560,6 +560,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
         )
     elif _has_error(response):
         if "errors" not in _NOTIFY_STATE_SET:
+            _plugin_logger.warning("  -> skipped: errors not in state set")
             return
         error = _extract_error(response)
         title = "Hermes — Error"
@@ -570,6 +571,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
         )
     else:
         if "finished" not in _NOTIFY_STATE_SET:
+            _plugin_logger.warning("  -> skipped: finished not in state set")
             return
         title = "Hermes"
         message = _notify_message(
@@ -586,7 +588,7 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
 
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
-    _plugin_logger.info(
+    _plugin_logger.debug(
         "PRE_APPROVAL pattern=%s command=%s notify=%s approvals_in_set=%s",
         kwargs.get("pattern_key"),
         (kwargs.get("command") or "")[:80],
@@ -691,7 +693,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
 
     Expected kwargs: tool_name, args, task_id, session_id, tool_call_id
     """
-    _plugin_logger.info("[PRE_TOOL] ENTRY - kwargs keys: %s", list(kwargs.keys()))
+    _plugin_logger.debug("[PRE_TOOL] ENTRY - kwargs keys: %s", list(kwargs.keys()))
 
     tool_name = str(kwargs.get("tool_name") or "unknown")
     args = kwargs.get("args") or {}
@@ -700,7 +702,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     tool_call_id = str(kwargs.get("tool_call_id") or "")
 
     # Log every tool call
-    _plugin_logger.info(
+    _plugin_logger.debug(
         "[PRE_TOOL] tool=%s session=%s task=%s call=%s notify=%s | args_keys=%s",
         tool_name, session_id, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
     )
@@ -720,7 +722,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
 
     # --- Early return: notifications disabled ---
     if not _NOTIFY_ENABLED:
-        _plugin_logger.info("[PRE_TOOL] ABORT: _NOTIFY_ENABLED is False")
+        _plugin_logger.warning("[PRE_TOOL] ABORT: _NOTIFY_ENABLED is False")
         return
 
     _plugin_logger.info("[PRE_TOOL] Notifications ENABLED - continuing")
@@ -731,7 +733,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
         _plugin_logger.info("[PRE_TOOL] sending clarify notification")
         title, message = _build_clarify_notification(args)
-        _plugin_logger.info("[PRE_TOOL] pushover: title=%s", title)
+        _plugin_logger.debug("[PRE_TOOL] pushover: title=%s", title)
         _send_pushover_notification(title, message)
         _plugin_logger.info("[PRE_TOOL] pushover SENT for clarify")
 
@@ -739,7 +741,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     if tool_name == "terminal":
         _plugin_logger.info("[PRE_TOOL] tool=terminal detected")
         command = str(args.get("command") or "")
-        _plugin_logger.info("[PRE_TOOL] terminal command=%s", command[:200])
+        _plugin_logger.debug("[PRE_TOOL] terminal command=%s", command[:200])
         _plugin_logger.info(
             "[PRE_TOOL] terminal check: blockers_in_set=%s, sudo_password_in_env=%s, _NOTIFY_ENABLED=%s",
             "blockers" in _NOTIFY_STATE_SET,
@@ -749,22 +751,22 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         if "blockers" in _NOTIFY_STATE_SET:
             _plugin_logger.info("[PRE_TOOL] blockers IN state set - checking for sudo")
             is_sudo = _is_sudo_password_prompt(command)
-            _plugin_logger.info("[PRE_TOOL] _is_sudo_password_prompt returned: %s", is_sudo)
+            _plugin_logger.debug("[PRE_TOOL] _is_sudo_password_prompt returned: %s", is_sudo)
             if is_sudo:
-                _plugin_logger.info("[PRE_TOOL] SUDO PASSWORD PROMPT detected: %s", command[:80])
+                _plugin_logger.debug("[PRE_TOOL] SUDO PASSWORD PROMPT detected: %s", command[:80])
                 msg = _notify_message(
                     minimal="Sudo password needed — the command will timeout without input",
                     summary=f"Sudo command requires password: {command[:120]}",
                     full=f"Sudo command requires password: {command[:300]}",
                 )
-                _plugin_logger.info("[PRE_TOOL] calling _send_pushover_sync for sudo")
+                _plugin_logger.info("[PRE_TOOL] calling _send_pushover_notification for sudo")
                 _send_pushover_notification(
                     "Hermes — Sudo Password Needed",
                     msg,
                 )
-                _plugin_logger.info("[PRE_TOOL] _send_pushover_sync returned")
+                _plugin_logger.debug("[PRE_TOOL] _send_pushover_notification returned")
         else:
-            _plugin_logger.info("[PRE_TOOL] blockers NOT in state set - skipping sudo check")
+            _plugin_logger.debug("[PRE_TOOL] blockers NOT in state set - skipping sudo check")
 
     if not session_id:
         _plugin_logger.info("[PRE_TOOL] no session_id - returning early")
@@ -796,17 +798,17 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         start = _TOOL_CALL_TIMES.pop(key, None)
         if start:
             elapsed = time.time() - start
-            _plugin_logger.info(
+            _plugin_logger.debug(
                 "POST_TOOL [%s] tool=%s call=%s duration_ms=%s elapsed=%.2fs",
                 session_id, tool_name, tool_call_id, duration_ms, elapsed
             )
         else:
-            _plugin_logger.info(
+            _plugin_logger.debug(
                 "POST_TOOL [%s] tool=%s call=%s duration_ms=%s (no pre-timing)",
                 session_id, tool_name, tool_call_id, duration_ms
             )
     else:
-        _plugin_logger.info("POST_TOOL tool=%s (no session_id)", tool_name)
+        _plugin_logger.warning("POST_TOOL tool=%s (no session_id)", tool_name)
 
     if not _NOTIFY_ENABLED:
         return
