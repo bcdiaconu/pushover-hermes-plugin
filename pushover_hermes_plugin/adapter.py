@@ -637,19 +637,19 @@ class PushoverAdapter(BasePlatformAdapter):
         Override to send Pushover notification BEFORE the tool blocks.
         """
         _plugin_logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
-                    question[:50], choices, _PUSHOVER_NOTIFY_ENABLED)
+                    question[:50], choices, _pushover_notify_enabled)
         _plugin_logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
 
         # Send notification for clarify questions
-        if _PUSHOVER_NOTIFY_ENABLED and "questions" in _NOTIFY_STATE_SET:
-            _plugin_logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
+        if _pushover_notify_enabled and "questions" in _notify_state_set:
+            _plugin_logger.info("send_clarify: building notification (minimal=%s)", _notify_question)
             title, message = _build_clarify_notification({"question": question, "choices": choices or []})
             _plugin_logger.info("send_clarify: sending pushover notification: title=%s", title)
             _dispatch_notification(title, message)
             _plugin_logger.info("send_clarify: notification sent")
         else:
             _plugin_logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
-                        _PUSHOVER_NOTIFY_ENABLED, "questions" in _NOTIFY_STATE_SET)
+                        _pushover_notify_enabled, "questions" in _notify_state_set)
 
         # Call parent to actually send the clarify prompt
         _plugin_logger.info("send_clarify: calling parent send_clarify")
@@ -685,19 +685,19 @@ class PushoverAdapter(BasePlatformAdapter):
 # =============================================================================
 
 # Env var toggles
-_PUSHOVER_NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
-_NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
-_NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
-_NOTIFY_NATIVE_ENABLED = os.getenv("PUSHOVER_NOTIFY_NATIVE", "").lower() in {"true", "1", "yes"}
-_NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all" or "usual"
+_pushover_notify_enabled: bool = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
+_notify_question: str = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
+_notify_device: str = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
+_notify_native_enabled: bool = os.getenv("PUSHOVER_NOTIFY_NATIVE", "").lower() in {"true", "1", "yes"}
+_notify_states: str = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all" or "usual"
 # "usual" preset: all common states except post-approval (exceptional, noisy)
 _USUAL_STATE_SET = {"finished", "questions", "errors", "pre-approval", "blockers"}
-_NOTIFY_STATE_SET = (
-    set(_NOTIFY_STATES.split())
-    if _NOTIFY_STATES not in {"all", "usual"}
+_notify_state_set = (
+    set(_notify_states.split())
+    if _notify_states not in {"all", "usual"}
     else (
         _USUAL_STATE_SET
-        if _NOTIFY_STATES == "usual"
+        if _notify_states == "usual"
         else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
     )
 )
@@ -706,8 +706,8 @@ _NOTIFY_STATE_SET = (
 # Log initialization state to dedicated file (will appear once module is loaded)
 def _log_notify_init():
     _plugin_logger.info(
-        "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_NATIVE=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
-        _PUSHOVER_NOTIFY_ENABLED, _NOTIFY_NATIVE_ENABLED, _NOTIFY_QUESTION, _NOTIFY_DEVICE, _NOTIFY_STATES, _NOTIFY_STATE_SET
+        "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_NATIVE=%s, _notify_question=%s, _notify_device=%s, _notify_states=%s, _notify_state_set=%s",
+        _pushover_notify_enabled, _notify_native_enabled, _notify_question, _notify_device, _notify_states, _notify_state_set
     )
     _plugin_logger.debug("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
                         bool(os.getenv("PUSHOVER_APP_TOKEN")), bool(os.getenv("PUSHOVER_USER_KEY")),
@@ -730,8 +730,8 @@ def _send_pushover_notification(title: str, message: str) -> bool:
     """
     _plugin_logger.info("[PUSHOVER_SEND] ENTRY: title=%s, msg_len=%d", title, len(message))
 
-    if not _PUSHOVER_NOTIFY_ENABLED:
-        _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _PUSHOVER_NOTIFY_ENABLED is False")
+    if not _pushover_notify_enabled:
+        _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _pushover_notify_enabled is False")
         return False
 
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
@@ -752,8 +752,8 @@ def _send_pushover_notification(title: str, message: str) -> bool:
         "message": message,
         "title": title,
     }
-    if _NOTIFY_DEVICE:
-        payload["device"] = _NOTIFY_DEVICE
+    if _notify_device:
+        payload["device"] = _notify_device
 
     try:
         import requests as _req
@@ -787,7 +787,8 @@ def _send_native_notification(title: str, message: str) -> bool:
     Returns:
         True if notify-send ran successfully, False otherwise.
     """
-    if not _NOTIFY_NATIVE_ENABLED:
+    if not _notify_native_enabled:
+        _plugin_logger.debug("[NATIVE_SEND] native notifications disabled by config")
         return False
 
     if len(message) > MAX_MESSAGE_LENGTH:
@@ -816,14 +817,14 @@ def _send_native_notification(title: str, message: str) -> bool:
         return True
     except FileNotFoundError:
         # Headless server — no GUI / no libnotify
-        _plugin_logger.debug("[NATIVE] notify-send not found — falling back to print")
+        _plugin_logger.debug("[NATIVE_SEND] notify-send not found — falling back to print")
         print(f"[{title}] {message}")
         return False
     except subprocess.TimeoutExpired:
-        _plugin_logger.warning("[NATIVE] notify-send timed out")
+        _plugin_logger.warning("[NATIVE_SEND] notify-send timed out")
         return False
     except Exception as e:
-        _plugin_logger.warning("[NATIVE] notify-send failed: %s", e)
+        _plugin_logger.warning("[NATIVE_SEND] notify-send failed: %s", e)
         return False
 
 
@@ -908,9 +909,9 @@ def _notify_message(minimal: str, summary: str, full: str) -> str:
     Returns:
         The message appropriate for the current verbosity level.
     """
-    if _NOTIFY_QUESTION == "minimal":
+    if _notify_question == "minimal":
         return minimal
-    if _NOTIFY_QUESTION == "summary":
+    if _notify_question == "summary":
         return summary
     return full
 
@@ -933,9 +934,9 @@ def _on_post_llm_call(**kwargs: Any) -> None:
         _plugin_logger.debug("  kwargs[%s] = %s (type=%s)", k, v_repr, type(v).__name__)
 
     _plugin_logger.debug("POST_LLM response_len=%d notify=%s preview=%s",
-                        len(response), _PUSHOVER_NOTIFY_ENABLED, response[:300])
+                        len(response), _pushover_notify_enabled, response[:300])
 
-    if not _PUSHOVER_NOTIFY_ENABLED:
+    if not _pushover_notify_enabled:
         return
 
     if not response.strip():
@@ -944,7 +945,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
     # Detect notification type and check state filter
     if _is_question(response):
         _plugin_logger.debug("  -> detected: question")
-        if "questions" not in _NOTIFY_STATE_SET:
+        if "questions" not in _notify_state_set:
             _plugin_logger.warning("  -> skipped: questions not in state set")
             return
         question = _extract_question(response)
@@ -955,7 +956,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             full=question,
         )
     elif _has_error(response):
-        if "errors" not in _NOTIFY_STATE_SET:
+        if "errors" not in _notify_state_set:
             _plugin_logger.warning("  -> skipped: errors not in state set")
             return
         error = _extract_error(response)
@@ -966,7 +967,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             full=error[:500],
         )
     else:
-        if "finished" not in _NOTIFY_STATE_SET:
+        if "finished" not in _notify_state_set:
             _plugin_logger.warning("  -> skipped: finished not in state set")
             return
         title = "Hermes"
@@ -988,12 +989,12 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
         "PRE_APPROVAL pattern=%s command=%s notify=%s pre_approval_in_set=%s",
         kwargs.get("pattern_key"),
         (kwargs.get("command") or "")[:80],
-        _PUSHOVER_NOTIFY_ENABLED,
-        "pre-approval" in _NOTIFY_STATE_SET,
+        _pushover_notify_enabled,
+        "pre-approval" in _notify_state_set,
     )
-    if not _PUSHOVER_NOTIFY_ENABLED:
+    if not _pushover_notify_enabled:
         return
-    if "pre-approval" not in _NOTIFY_STATE_SET:
+    if "pre-approval" not in _notify_state_set:
         return
 
     pattern_key = str(kwargs.get("pattern_key") or "")
@@ -1028,9 +1029,9 @@ def _on_post_approval_response(**kwargs: Any) -> None:
     Post-approval is NOT included in the "usual" preset — only enabled
     explicitly when the user wants notification on every approval response.
     """
-    if not _PUSHOVER_NOTIFY_ENABLED:
+    if not _pushover_notify_enabled:
         return
-    if "post-approval" not in _NOTIFY_STATE_SET:
+    if "post-approval" not in _notify_state_set:
         return
 
     choice = str(kwargs.get("choice") or "")
@@ -1102,7 +1103,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # Log every tool call
     _plugin_logger.debug(
         "[PRE_TOOL] tool=%s session=%s task=%s call=%s notify=%s | args_keys=%s",
-        tool_name, session_id, task_id, tool_call_id, _PUSHOVER_NOTIFY_ENABLED, list(args.keys())
+        tool_name, session_id, task_id, tool_call_id, _pushover_notify_enabled, list(args.keys())
     )
 
     # Redact sensitive values in args
@@ -1119,7 +1120,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         _TOOL_CALL_TIMES[f"{session_id}:{tool_call_id}:{tool_name}"] = time.time()
 
     # --- Early return: notifications disabled ---
-    if not _PUSHOVER_NOTIFY_ENABLED:
+    if not _pushover_notify_enabled:
         _plugin_logger.warning("[PRE_TOOL] ABORT: _NOTIFY_ENABLED is False")
         return
 
@@ -1128,7 +1129,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # --- Clarify: notify BEFORE the tool blocks ---
     # Must come BEFORE the session_id guard — in CLI mode, session_id
     # may not be populated yet, but we still want to notify.
-    if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
+    if tool_name == "clarify" and "questions" in _notify_state_set:
         _plugin_logger.info("[PRE_TOOL] sending clarify notification")
         title, message = _build_clarify_notification(args)
         _plugin_logger.debug("[PRE_TOOL] notification: title=%s", title)
@@ -1142,11 +1143,11 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         _plugin_logger.debug("[PRE_TOOL] terminal command=%s", command[:200])
         _plugin_logger.info(
             "[PRE_TOOL] terminal check: blockers_in_set=%s, sudo_password_in_env=%s, _NOTIFY_ENABLED=%s",
-            "blockers" in _NOTIFY_STATE_SET,
+            "blockers" in _notify_state_set,
             "SUDO_PASSWORD" in os.environ,
-            _PUSHOVER_NOTIFY_ENABLED,
+            _pushover_notify_enabled,
         )
-        if "blockers" in _NOTIFY_STATE_SET:
+        if "blockers" in _notify_state_set:
             _plugin_logger.info("[PRE_TOOL] blockers IN state set - checking for sudo")
             is_sudo = _is_sudo_password_prompt(command)
             _plugin_logger.debug("[PRE_TOOL] _is_sudo_password_prompt returned: %s", is_sudo)
@@ -1208,14 +1209,14 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     else:
         _plugin_logger.warning("POST_TOOL tool=%s (no session_id)", tool_name)
 
-    if not _PUSHOVER_NOTIFY_ENABLED:
+    if not _pushover_notify_enabled:
         return
 
     args = kwargs.get("args") or {}
 
     # --- kanban_block ---
     if tool_name == "kanban_block":
-        if "blockers" not in _NOTIFY_STATE_SET:
+        if "blockers" not in _notify_state_set:
             return
 
         reason = str(args.get("reason") or "")
@@ -1257,20 +1258,17 @@ def register(ctx) -> None:
         ),
     )
 
-    # Register slash command /pushover-test
+    # Unified notifications command with two-level subcommands
     ctx.register_command(
-        "pushover-test",
-        handler=_handle_pushover_test_slash,
-        description="Send a test push notification via Pushover.",
-        args_hint="<message>",
-    )
-
-    # Register slash command /native-test
-    ctx.register_command(
-        "native-test",
-        handler=_handle_native_test_slash,
-        description="Send a test native desktop notification (notify-send).",
-        args_hint="<message>",
+        "notifications",
+        handler=_handle_notifications_slash,
+        description="Test, enable, or disable notifications (pushover/native).",
+        args_hint="[test|enable|disable] [pushover|native]",
+        subcommands={
+            "test": ("pushover", "native"),
+            "enable": ("pushover", "native"),
+            "disable": ("pushover", "native"),
+        },
     )
 
     # Register agent lifecycle notification hooks
@@ -1288,55 +1286,125 @@ def register(ctx) -> None:
     _plugin_logger.info("  pre_tool_call: %s", _on_pre_tool_call.__name__)
     _plugin_logger.info("  post_tool_call: %s", _on_post_tool_call.__name__)
 
-
-async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
-    """Handle /pushover-test <message> — send a test push notification.
-
-    Uses the same code path as hook notifications so the result
-    exercises the exact logic (_NOTIFY_ENABLED, credential checks,
-    truncation, device targeting) that the plugin relies on.
+async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
+    """Unified notification management command.
 
     Usage:
-        /pushover-test                    — sends default test message
-        /pushover-test "Custom message"   — sends custom message
+        /notifications                   — show status and usage
+        /notifications test pushover     — send a test pushover notification
+        /notifications test native       — send a test native notification
+        /notifications enable pushover   — enable pushover notifications
+        /notifications enable native     — enable native notifications
+        /notifications disable pushover  — disable pushover notifications
+        /notifications disable native    — disable native notifications
     """
-    message = raw_args.strip() or "Pushover test successful."
-    _plugin_logger.info("[SLASH /pushover-test] message=%s", message[:100])
+    _plugin_logger.info("[NOTIFICATIONS_CMD] received: raw_args=%r", raw_args)
+    _plugin_logger.debug("[NOTIFICATIONS_CMD] raw_args length=%d", len(raw_args))
 
-    success = _send_pushover_notification("Hermes Pushover Test", message)
-    if success:
-        _plugin_logger.info("[SLASH /pushover-test] sent successfully")
-        return "Pushover test notification sent successfully."
-    # Give actionable reason instead of generic failure
-    if not _PUSHOVER_NOTIFY_ENABLED:
-        _plugin_logger.warning("[SLASH /pushover-test] aborted: notifications disabled")
-        return "Notifications are disabled (PUSHOVER_NOTIFY=False). Enable them and try again."
+    parts = raw_args.strip().split()
+    _plugin_logger.debug("[NOTIFICATIONS_CMD] parsed parts=%s", parts)
+
+    if not parts:
+        _plugin_logger.debug("[NOTIFICATIONS_CMD] no args — returning status")
+        # Show current status
+        global _pushover_notify_enabled, _notify_native_enabled
+        push_enabled = _pushover_notify_enabled
+        native_enabled = _notify_native_enabled
+        lines = [
+            "Notifications status:",
+            f"  Pushover: {'enabled' if push_enabled else 'disabled'}",
+            f"  Native:   {'enabled' if native_enabled else 'disabled'}",
+            "",
+            "Usage: /notifications <test|enable|disable> <pushover|native>",
+            "",
+            "Examples:",
+            "  /notifications test pushover   — send a test pushover notification",
+            "  /notifications test native     — send a test native notification",
+            "  /notifications enable pushover — enable pushover notifications",
+            "  /notifications disable native  — disable native notifications",
+        ]
+        return "\n".join(lines)
+
+    action = parts[0].lower()
+    target = parts[1].lower() if len(parts) > 1 else ""
+    _plugin_logger.debug("[NOTIFICATIONS_CMD] action=%s, target=%s", action, target)
+
+    if action == "test":
+        if not target or target not in {"pushover", "native"}:
+            _plugin_logger.warning("[NOTIFICATIONS_CMD] invalid test target: %r", target)
+            return "Usage: /notifications test <pushover|native>"
+        _plugin_logger.info("[NOTIFICATIONS_CMD] test requested: target=%s", target)
+        if target == "pushover":
+            return await _test_pushover()
+        else:
+            return await _test_native()
+
+    elif action in ("enable", "disable"):
+        if not target or target not in {"pushover", "native"}:
+            _plugin_logger.warning("[NOTIFICATIONS_CMD] invalid %s target: %r", action, target)
+            return f"Usage: /notifications {action} <pushover|native>"
+        enabled = action == "enable"
+        _plugin_logger.info("[NOTIFICATIONS_CMD] %s %s -> enabled=%s", action, target, enabled)
+        if target == "pushover":
+            _pushover_notify_enabled = enabled
+        else:
+            _notify_native_enabled = enabled
+        return f"{target.title()} notifications {'enabled' if enabled else 'disabled'}."
+
+    else:
+        _plugin_logger.warning("[NOTIFICATIONS_CMD] unknown action: %r", action)
+        return (
+            f"Unknown action '{action}'.\n"
+            "Usage: /notifications <test|enable|disable> <pushover|native>"
+        )
+
+
+async def _test_pushover() -> str:
+    """Send a test Pushover notification."""
+    global _pushover_notify_enabled
+    _plugin_logger.info("[TEST_PUSHOVER] entry")
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
     user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
+    _plugin_logger.debug("[TEST_PUSHOVER] creds present: app_token=%s, user_key=%s", bool(app_token), bool(user_key))
     if not app_token or not user_key:
-        _plugin_logger.warning("[SLASH /pushover-test] aborted: missing credentials")
-        return "Pushover credentials not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY env vars."
-    _plugin_logger.warning("[SLASH /pushover-test] failed — check plugin logs for details")
+        _plugin_logger.warning("[TEST_PUSHOVER] missing credentials")
+        return "Pushover credentials not configured (PUSHOVER_APP_TOKEN / PUSHOVER_USER_KEY)."
+
+    # Override enable check for test — send regardless of enabled state
+    old_enabled = _pushover_notify_enabled
+    _plugin_logger.debug("[TEST_PUSHOVER] old_enabled=%s, overriding to True", old_enabled)
+    try:
+        _pushover_notify_enabled = True
+        success = _send_pushover_notification("Hermes Pushover Test", "Pushover notification test successful.")
+        _plugin_logger.debug("[TEST_PUSHOVER] _send_pushover_notification returned: %s", success)
+    finally:
+        _pushover_notify_enabled = old_enabled
+        _plugin_logger.debug("[TEST_PUSHOVER] restored _pushover_notify_enabled=%s", old_enabled)
+
+    if success:
+        _plugin_logger.info("[TEST_PUSHOVER] success")
+        return "Pushover test notification sent successfully."
+    _plugin_logger.warning("[TEST_PUSHOVER] send failed")
     return "Pushover send failed — check plugin logs for details."
 
 
-async def _handle_native_test_slash(raw_args: str) -> Optional[str]:
-    """Handle /native-test <message> — send a test native desktop notification.
+async def _test_native() -> str:
+    """Send a test native desktop notification."""
+    global _notify_native_enabled
+    _plugin_logger.info("[TEST_NATIVE] entry")
+    # Override enable check for test — send regardless of enabled state
+    old_enabled = _notify_native_enabled
+    _plugin_logger.debug("[TEST_NATIVE] old_enabled=%s, overriding to True", old_enabled)
+    try:
+        _notify_native_enabled = True
+        success = _send_native_notification("Hermes Native Test", "Native desktop notification test successful.")
+        _plugin_logger.debug("[TEST_NATIVE] _send_native_notification returned: %s", success)
+    finally:
+        _notify_native_enabled = old_enabled
+        _plugin_logger.debug("[TEST_NATIVE] restored _notify_native_enabled=%s", old_enabled)
 
-    Usage:
-        /native-test                    — sends default test message
-        /native-test "Custom message"   — sends custom message
-    """
-    message = raw_args.strip() or "Native desktop notification test successful."
-    _plugin_logger.info("[SLASH /native-test] message=%s", message[:100])
-
-    if not _NOTIFY_NATIVE_ENABLED:
-        _plugin_logger.warning("[SLASH /native-test] aborted: native notifications disabled")
-        return "Native notifications are disabled. Set PUSHOVER_NOTIFY_NATIVE=true or run the wizard."
-
-    success = _send_native_notification("Hermes Native Test", message)
     if success:
-        _plugin_logger.info("[SLASH /native-test] sent successfully")
+        _plugin_logger.info("[TEST_NATIVE] success")
         return "Native desktop notification sent successfully. Check your desktop for the pop-up."
-    _plugin_logger.warning("[SLASH /native-test] notify-send not available")
+    _plugin_logger.info("[TEST_NATIVE] failed")
     return "notify-send not found — you may be on a headless server or missing libnotify."
