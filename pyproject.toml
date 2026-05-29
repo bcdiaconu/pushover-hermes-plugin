@@ -21,6 +21,11 @@ dependencies = ["aiohttp>=3.9"]
 # Falls back to urllib if not available, so not strictly required.
 [project.optional-dependencies]
 notify = ["requests>=2.28"]
+test = ["pytest>=7", "pytest-asyncio>=0.23", "flake8"]
 
 [project.entry-points."hermes_agent.plugins"]
 pushover-hermes-plugin = "pushover_hermes_plugin"
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

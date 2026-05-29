@@ -1,4 +1,11 @@
 """Pytest configuration for pushover-hermes-plugin tests."""
+# noqa: E402 -- sys.path manipulation requires imports after setup
+import sys
+from pathlib import Path
+
+_mock_dir = Path(__file__).parent / "mocks"
+if str(_mock_dir) not in sys.path:
+    sys.path.insert(0, str(_mock_dir))
 
 import pytest
 from gateway.platform_registry import platform_registry, PlatformEntry
