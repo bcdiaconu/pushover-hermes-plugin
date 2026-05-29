@@ -28,9 +28,11 @@ Lifecycle notification env vars:
     PUSHOVER_NOTIFY_DEVICE     — optional device filter for notifications
 """
 
-import asyncio
+import atexit
 import logging
 import os
+import re
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -53,7 +55,6 @@ _plugin_handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(mess
 _plugin_logger.addHandler(_plugin_handler)
 
 # Log module load — to stderr for visibility and to file
-import sys
 sys.stderr.write(f"[PUSHOVER_PLUGIN] Module loaded, home={Path.home()}, log_dir={_PLUGIN_LOG_DIR}\n")
 sys.stderr.flush()
 _plugin_logger.info("=== MODULE LOADED — home=%s ===", Path.home())
@@ -79,8 +80,6 @@ def check_requirements() -> bool:
         return True
     except ImportError:
         return False
-
-
 
 
 def validate_config(config) -> bool:
@@ -311,7 +310,7 @@ class PushoverAdapter(BasePlatformAdapter):
         Override to send Pushover notification BEFORE the tool blocks.
         """
         logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
-                     question[:50], choices, _NOTIFY_ENABLED)
+                    question[:50], choices, _NOTIFY_ENABLED)
         logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
 
         # Send notification for clarify questions
@@ -365,8 +364,8 @@ _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
 _NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all"
 _NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals", "blockers"}
 
+
 # Log initialization state to dedicated file (will appear once module is loaded)
-import atexit
 def _log_notify_init():
     _plugin_logger.info(
         "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
@@ -375,6 +374,8 @@ def _log_notify_init():
     _plugin_logger.info("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
                         bool(os.getenv("PUSHOVER_APP_TOKEN")), bool(os.getenv("PUSHOVER_USER_KEY")),
                         "SUDO_PASSWORD" in os.environ)
+
+
 atexit.register(_log_notify_init)
 
 
@@ -484,7 +485,6 @@ def _extract_error(response: str) -> str:
     return response.split("\n")[0].strip()
 
 
-import re
 _SUDO_PLAIN_RE = re.compile(
     r"(?:^|[;&|`\n]|&&|\|\|)\s*sudo\b(?!\s+-(?:S|s|--stdin|--askpass))"
 )
@@ -684,7 +684,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     Expected kwargs: tool_name, args, task_id, session_id, tool_call_id
     """
     _plugin_logger.info("[PRE_TOOL] ENTRY - kwargs keys: %s", list(kwargs.keys()))
-    
+
     tool_name = str(kwargs.get("tool_name") or "unknown")
     args = kwargs.get("args") or {}
     session_id = str(kwargs.get("session_id") or "")
@@ -781,7 +781,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     session_id = str(kwargs.get("session_id") or "")
     tool_call_id = str(kwargs.get("tool_call_id") or "")
     duration_ms = kwargs.get("duration_ms")
-    
+
     # Log completion with timing
     if session_id:
         key = f"{session_id}:{tool_call_id}:{tool_name}"
@@ -799,7 +799,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
             )
     else:
         _plugin_logger.info("POST_TOOL tool=%s (no session_id)", tool_name)
-    
+
     if not _NOTIFY_ENABLED:
         return
 
@@ -863,7 +863,7 @@ def register(ctx) -> None:
     ctx.register_hook("post_approval_response", _on_post_approval_response)
     ctx.register_hook("pre_tool_call", _on_pre_tool_call)
     ctx.register_hook("post_tool_call", _on_post_tool_call)
-    
+
     # Log registration confirmation
     _plugin_logger.info("=== Plugin hooks registered successfully ===")
     _plugin_logger.info("  post_llm_call: %s", _on_post_llm_call.__name__)
