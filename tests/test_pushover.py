@@ -434,24 +434,24 @@ class TestNotificationStateFiltering:
     def _call_with_states(self, states: str, kwargs: dict) -> bool:
         """Helper: set states env, call hook, return whether notification was sent."""
         import pushover_hermes_plugin.adapter as mod
-        orig_states = mod._NOTIFY_STATES
-        orig_set = mod._NOTIFY_STATE_SET
+        orig_states = mod._notify_states
+        orig_set = mod._notify_state_set
         sent = []
 
         def capture(title, msg):
             sent.append((title, msg))
 
-        mod._NOTIFY_STATES = states.lower()
-        mod._NOTIFY_STATE_SET = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
-        mod._PUSHOVER_NOTIFY_ENABLED = True
+        mod._notify_states = states.lower()
+        mod._notify_state_set = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
+        mod._pushover_notify_enabled = True
 
         try:
             with patch.object(mod, "_send_pushover_notification", capture):
                 mod._on_post_llm_call(**kwargs)
             return len(sent) > 0
         finally:
-            mod._NOTIFY_STATES = orig_states
-            mod._NOTIFY_STATE_SET = orig_set
+            mod._notify_states = orig_states
+            mod._notify_state_set = orig_set
 
     def test_finished_allowed(self):
         sent = self._call_with_states("finished", {"assistant_response": "Task done."})
