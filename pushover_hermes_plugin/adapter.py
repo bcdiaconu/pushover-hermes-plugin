@@ -520,22 +520,24 @@ def _notify_message(minimal: str, summary: str, full: str) -> str:
 
 
 def _on_post_llm_call(**kwargs: Any) -> None:
-    """Hook handler: fires after each agent turn.
+    """Hook handler: fires after each agent LLM call.
 
     Sends a Pushover notification when the agent yields control back
     to the user.  Detects: finished/idle, clarifying questions, errors.
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
-
-    IMPORTANT: only send "Finished" if the agent has no pending tool calls.
-    The agent may make multiple LLM calls per task (planning, analyzing results,
-    etc.) — sending "Finished" on an intermediate response is wrong.
     """
     response = str(kwargs.get("assistant_response") or "")
-    tool_calls = kwargs.get("tool_calls")
 
-    _plugin_logger.info("POST_LLM kwargs=%s | response_len=%d notify=%s tool_calls=%s preview=%s",
-                        list(kwargs.keys()), len(response), _NOTIFY_ENABLED,
-                        len(tool_calls) if tool_calls else 0, response[:300])
+    # Diagnostic: log ALL kwargs keys and types to understand hook interface
+    _plugin_logger.info("POST_LLM kwargs=%s", list(kwargs.keys()))
+    for k, v in kwargs.items():
+        if k == "assistant_response":
+            continue  # already logged separately
+        v_repr = repr(v) if len(repr(v)) < 200 else repr(v)[:200] + "..."
+        _plugin_logger.info("  kwargs[%s] = %s (type=%s)", k, v_repr, type(v).__name__)
+
+    _plugin_logger.info("POST_LLM response_len=%d notify=%s preview=%s",
+                        len(response), _NOTIFY_ENABLED, response[:300])
 
     if not _NOTIFY_ENABLED:
         return
@@ -567,11 +569,6 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             full=error[:500],
         )
     else:
-        # Only send "Finished" if agent has no pending tool calls.
-        # If tool_calls exist, the agent is still working (planning next step).
-        if tool_calls:
-            _plugin_logger.info("  -> skipped: agent has %d pending tool calls (still working)", len(tool_calls))
-            return
         if "finished" not in _NOTIFY_STATE_SET:
             return
         title = "Hermes"
