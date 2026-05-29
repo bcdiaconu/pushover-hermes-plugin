@@ -18,6 +18,9 @@ optional_env:
   - name: PUSHOVER_NOTIFY_ENABLED
     description: "Enable agent lifecycle notifications (true/false)"
     default: "false"
+  - name: PUSHOVER_NOTIFY_NATIVE
+    description: "Enable native desktop notifications via notify-send (true/false)"
+    default: "false"
   - name: PUSHOVER_NOTIFY_QUESTION
     description: "Question detail level: full, summary, or minimal (privacy)"
     default: "full"

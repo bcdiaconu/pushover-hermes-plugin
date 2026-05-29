@@ -443,7 +443,7 @@ class TestNotificationStateFiltering:
 
         mod._NOTIFY_STATES = states.lower()
         mod._NOTIFY_STATE_SET = set(states.split()) if states.lower() != "all" else {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers"}
-        mod._NOTIFY_ENABLED = True
+        mod._PUSHOVER_NOTIFY_ENABLED = True
 
         try:
             with patch.object(mod, "_send_pushover_notification", capture):

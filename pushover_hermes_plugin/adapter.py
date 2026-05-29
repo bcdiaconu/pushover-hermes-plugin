@@ -26,6 +26,8 @@ Lifecycle notification env vars:
     PUSHOVER_NOTIFY_STATES     — space-separated: finished, questions, errors,
                                 approvals, blockers, all (default: "all")
     PUSHOVER_NOTIFY_DEVICE     — optional device filter for notifications
+    PUSHOVER_NOTIFY_NATIVE     — "true" to enable native desktop notifications
+                                (notify-send). Falls back to print on headless.
     PUSHOVER_LOG_LEVEL         — logging level override: DEBUG, INFO, WARNING,
                                 ERROR. Defaults to logging.level from config.yaml.
 """
@@ -34,6 +36,7 @@ import atexit
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -177,6 +180,7 @@ def _load_current_config(env_path: str) -> Dict[str, Any]:
         "user_key": _resolve_current("PUSHOVER_USER_KEY", env),
         "allowed": _resolve_current("PUSHOVER_ALLOWED_USERS", env),
         "enabled": _resolve_current("PUSHOVER_NOTIFY_ENABLED", env).lower() in {"true", "1", "yes"},
+        "native": _resolve_current("PUSHOVER_NOTIFY_NATIVE", env).lower() in {"true", "1", "yes"},
         "question": _resolve_current("PUSHOVER_NOTIFY_QUESTION", env) or "full",
         "states": cur_states,
         "state_set": cur_state_set,
@@ -212,6 +216,8 @@ def _save_config(cfg: Dict[str, Any], result: Dict[str, Any]) -> None:
     # Notifications
     if result.get("enabled") != cfg["enabled"]:
         updates["PUSHOVER_NOTIFY_ENABLED"] = str(result["enabled"]).lower()
+    if result.get("native") != cfg.get("native"):
+        updates["PUSHOVER_NOTIFY_NATIVE"] = str(result.get("native", False)).lower()
 
     if result.get("enabled"):
         if result.get("question") != cfg["question"]:
@@ -316,6 +322,19 @@ def _setup_prompt() -> None:
     ).run()
     notify_enabled = enabled_choice == "yes"
 
+    # Native desktop notifications
+    native_choice = radiolist_dialog(
+        title="Native Notifications",
+        text="Enable native desktop notifications (notify-send)?",
+        values=[
+            ("yes", "Yes"),
+            ("no", "No"),
+        ],
+        default="yes" if cfg.get("native") else "no",
+        style=style,
+    ).run()
+    notify_native = native_choice == "yes"
+
     question = cfg["question"]
     states_val = cfg["states"]
     device = cfg["device"]
@@ -370,6 +389,7 @@ def _setup_prompt() -> None:
         "user_key": user_key,
         "allowed": allowed,
         "enabled": notify_enabled,
+        "native": notify_native,
         "question": question,
         "states": states_val,
         "device": device,
@@ -402,6 +422,13 @@ def _setup_legacy() -> None:
 
     ans = input(f"  Enable notifications [{'true' if cfg['enabled'] else 'false'}]: ").strip().lower()
     notify_enabled = ans in {"true", "yes", "1"} if ans else cfg["enabled"]
+
+    # Native desktop notifications
+    print()
+    print("  ─── Native Desktop Notifications ───")
+    print("  Desktop pop-up notifications via notify-send (Linux/GNOME).")
+    ans_native = input(f"  Enable native notifications [{'true' if cfg.get('native') else 'false'}]: ").strip().lower()
+    notify_native = ans_native in {"true", "yes", "1"} if ans_native else cfg.get("native", False)
 
     question = cfg["question"]
     states_val = cfg["states"]
@@ -442,6 +469,7 @@ def _setup_legacy() -> None:
         "user_key": user_key,
         "allowed": allowed,
         "enabled": notify_enabled,
+        "native": notify_native,
         "question": question,
         "states": states_val,
         "device": device,
@@ -609,19 +637,19 @@ class PushoverAdapter(BasePlatformAdapter):
         Override to send Pushover notification BEFORE the tool blocks.
         """
         _plugin_logger.info("send_clarify called: question=%s, choices=%s, notify_enabled=%s",
-                    question[:50], choices, _NOTIFY_ENABLED)
+                    question[:50], choices, _PUSHOVER_NOTIFY_ENABLED)
         _plugin_logger.debug("send_clarify full args: clarify_id=%s, session_key=%s", clarify_id, session_key)
 
         # Send notification for clarify questions
-        if _NOTIFY_ENABLED and "questions" in _NOTIFY_STATE_SET:
+        if _PUSHOVER_NOTIFY_ENABLED and "questions" in _NOTIFY_STATE_SET:
             _plugin_logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
             title, message = _build_clarify_notification({"question": question, "choices": choices or []})
             _plugin_logger.info("send_clarify: sending pushover notification: title=%s", title)
-            _send_pushover_notification(title, message)
-            _plugin_logger.info("send_clarify: pushover notification sent")
+            _dispatch_notification(title, message)
+            _plugin_logger.info("send_clarify: notification sent")
         else:
             _plugin_logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
-                        _NOTIFY_ENABLED, "questions" in _NOTIFY_STATE_SET)
+                        _PUSHOVER_NOTIFY_ENABLED, "questions" in _NOTIFY_STATE_SET)
 
         # Call parent to actually send the clarify prompt
         _plugin_logger.info("send_clarify: calling parent send_clarify")
@@ -657,9 +685,10 @@ class PushoverAdapter(BasePlatformAdapter):
 # =============================================================================
 
 # Env var toggles
-_NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
+_PUSHOVER_NOTIFY_ENABLED = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower() in {"true", "1", "yes"}
 _NOTIFY_QUESTION = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full").lower()  # full|summary|minimal
 _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
+_NOTIFY_NATIVE_ENABLED = os.getenv("PUSHOVER_NOTIFY_NATIVE", "").lower() in {"true", "1", "yes"}
 _NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all" or "usual"
 # "usual" preset: all common states except post-approval (exceptional, noisy)
 _USUAL_STATE_SET = {"finished", "questions", "errors", "pre-approval", "blockers"}
@@ -677,8 +706,8 @@ _NOTIFY_STATE_SET = (
 # Log initialization state to dedicated file (will appear once module is loaded)
 def _log_notify_init():
     _plugin_logger.info(
-        "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
-        _NOTIFY_ENABLED, _NOTIFY_QUESTION, _NOTIFY_DEVICE, _NOTIFY_STATES, _NOTIFY_STATE_SET
+        "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_NATIVE=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
+        _PUSHOVER_NOTIFY_ENABLED, _NOTIFY_NATIVE_ENABLED, _NOTIFY_QUESTION, _NOTIFY_DEVICE, _NOTIFY_STATES, _NOTIFY_STATE_SET
     )
     _plugin_logger.debug("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
                         bool(os.getenv("PUSHOVER_APP_TOKEN")), bool(os.getenv("PUSHOVER_USER_KEY")),
@@ -701,8 +730,8 @@ def _send_pushover_notification(title: str, message: str) -> bool:
     """
     _plugin_logger.info("[PUSHOVER_SEND] ENTRY: title=%s, msg_len=%d", title, len(message))
 
-    if not _NOTIFY_ENABLED:
-        _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _NOTIFY_ENABLED is False")
+    if not _PUSHOVER_NOTIFY_ENABLED:
+        _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _PUSHOVER_NOTIFY_ENABLED is False")
         return False
 
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
@@ -747,6 +776,64 @@ def _send_pushover_notification(title: str, message: str) -> bool:
     except Exception as e:
         _plugin_logger.error("[PUSHOVER_SEND] requests FAILED: %s", e)
         return False
+
+
+def _send_native_notification(title: str, message: str) -> bool:
+    """Send a native desktop notification via ``notify-send``.
+
+    Fire-and-forget — never blocks the main flow. Falls back to a
+    stdout print when running on a headless server (no notify-send).
+
+    Returns:
+        True if notify-send ran successfully, False otherwise.
+    """
+    if not _NOTIFY_NATIVE_ENABLED:
+        return False
+
+    if len(message) > MAX_MESSAGE_LENGTH:
+        message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
+
+    try:
+        subprocess.run(
+            [
+                "notify-send",
+                "-u", "normal",
+                "-a", "Hermes Agent",
+                title,
+                message,
+            ],
+            check=True,
+            timeout=5,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        
+        subprocess.Popen(
+            ["aplay", "/usr/share/sounds/speech-dispatcher/test.wav"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        return True
+    except FileNotFoundError:
+        # Headless server — no GUI / no libnotify
+        _plugin_logger.debug("[NATIVE] notify-send not found — falling back to print")
+        print(f"[{title}] {message}")
+        return False
+    except subprocess.TimeoutExpired:
+        _plugin_logger.warning("[NATIVE] notify-send timed out")
+        return False
+    except Exception as e:
+        _plugin_logger.warning("[NATIVE] notify-send failed: %s", e)
+        return False
+
+
+def _dispatch_notification(title: str, message: str) -> None:
+    """Send notification through all enabled channels (Pushover, native).
+
+    Channels are independent — a failure in one does not suppress others.
+    """
+    _send_pushover_notification(title, message)
+    _send_native_notification(title, message)
 
 
 def _is_question(response: str) -> bool:
@@ -846,9 +933,9 @@ def _on_post_llm_call(**kwargs: Any) -> None:
         _plugin_logger.debug("  kwargs[%s] = %s (type=%s)", k, v_repr, type(v).__name__)
 
     _plugin_logger.debug("POST_LLM response_len=%d notify=%s preview=%s",
-                        len(response), _NOTIFY_ENABLED, response[:300])
+                        len(response), _PUSHOVER_NOTIFY_ENABLED, response[:300])
 
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         return
 
     if not response.strip():
@@ -889,7 +976,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             full="Finished",
         )
 
-    _send_pushover_notification(title, message)
+    _dispatch_notification(title, message)
 
 
 def _on_pre_approval_request(**kwargs: Any) -> None:
@@ -901,10 +988,10 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
         "PRE_APPROVAL pattern=%s command=%s notify=%s pre_approval_in_set=%s",
         kwargs.get("pattern_key"),
         (kwargs.get("command") or "")[:80],
-        _NOTIFY_ENABLED,
+        _PUSHOVER_NOTIFY_ENABLED,
         "pre-approval" in _NOTIFY_STATE_SET,
     )
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         return
     if "pre-approval" not in _NOTIFY_STATE_SET:
         return
@@ -931,7 +1018,7 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
         full=detailed,
     )
 
-    _send_pushover_notification("Hermes — Approval Needed", message)
+    _dispatch_notification("Hermes — Approval Needed", message)
 
 
 def _on_post_approval_response(**kwargs: Any) -> None:
@@ -941,7 +1028,7 @@ def _on_post_approval_response(**kwargs: Any) -> None:
     Post-approval is NOT included in the "usual" preset — only enabled
     explicitly when the user wants notification on every approval response.
     """
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         return
     if "post-approval" not in _NOTIFY_STATE_SET:
         return
@@ -962,7 +1049,7 @@ def _on_post_approval_response(**kwargs: Any) -> None:
             summary=f"{verb}: {cmd_short}",
             full=f"{verb}: {cmd_short}",
         )
-        _send_pushover_notification("Hermes — Approval Response", message)
+        _dispatch_notification("Hermes — Approval Response", message)
 
 
 def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
@@ -1015,7 +1102,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # Log every tool call
     _plugin_logger.debug(
         "[PRE_TOOL] tool=%s session=%s task=%s call=%s notify=%s | args_keys=%s",
-        tool_name, session_id, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
+        tool_name, session_id, task_id, tool_call_id, _PUSHOVER_NOTIFY_ENABLED, list(args.keys())
     )
 
     # Redact sensitive values in args
@@ -1032,7 +1119,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         _TOOL_CALL_TIMES[f"{session_id}:{tool_call_id}:{tool_name}"] = time.time()
 
     # --- Early return: notifications disabled ---
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         _plugin_logger.warning("[PRE_TOOL] ABORT: _NOTIFY_ENABLED is False")
         return
 
@@ -1044,9 +1131,9 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
         _plugin_logger.info("[PRE_TOOL] sending clarify notification")
         title, message = _build_clarify_notification(args)
-        _plugin_logger.debug("[PRE_TOOL] pushover: title=%s", title)
-        _send_pushover_notification(title, message)
-        _plugin_logger.info("[PRE_TOOL] pushover SENT for clarify")
+        _plugin_logger.debug("[PRE_TOOL] notification: title=%s", title)
+        _dispatch_notification(title, message)
+        _plugin_logger.info("[PRE_TOOL] notification SENT for clarify")
 
     # --- Terminal sudo: notify if command will prompt for password ---
     if tool_name == "terminal":
@@ -1057,7 +1144,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
             "[PRE_TOOL] terminal check: blockers_in_set=%s, sudo_password_in_env=%s, _NOTIFY_ENABLED=%s",
             "blockers" in _NOTIFY_STATE_SET,
             "SUDO_PASSWORD" in os.environ,
-            _NOTIFY_ENABLED,
+            _PUSHOVER_NOTIFY_ENABLED,
         )
         if "blockers" in _NOTIFY_STATE_SET:
             _plugin_logger.info("[PRE_TOOL] blockers IN state set - checking for sudo")
@@ -1070,12 +1157,12 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
                     summary=f"Sudo command requires password: {command[:120]}",
                     full=f"Sudo command requires password: {command[:300]}",
                 )
-                _plugin_logger.info("[PRE_TOOL] calling _send_pushover_notification for sudo")
-                _send_pushover_notification(
+                _plugin_logger.info("[PRE_TOOL] calling _dispatch_notification for sudo")
+                _dispatch_notification(
                     "Hermes — Sudo Password Needed",
                     msg,
                 )
-                _plugin_logger.debug("[PRE_TOOL] _send_pushover_notification returned")
+                _plugin_logger.debug("[PRE_TOOL] _dispatch_notification returned")
         else:
             _plugin_logger.debug("[PRE_TOOL] blockers NOT in state set - skipping sudo check")
 
@@ -1121,7 +1208,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
     else:
         _plugin_logger.warning("POST_TOOL tool=%s (no session_id)", tool_name)
 
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         return
 
     args = kwargs.get("args") or {}
@@ -1139,7 +1226,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         if reason:
             parts.append(reason[:400])
         message = " | ".join(parts) if parts else "Kanban task blocked — needs your input"
-        _send_pushover_notification("Hermes — Kanban Blocked", message)
+        _dispatch_notification("Hermes — Kanban Blocked", message)
 
 
 def register(ctx) -> None:
@@ -1178,6 +1265,14 @@ def register(ctx) -> None:
         args_hint="<message>",
     )
 
+    # Register slash command /native-test
+    ctx.register_command(
+        "native-test",
+        handler=_handle_native_test_slash,
+        description="Send a test native desktop notification (notify-send).",
+        args_hint="<message>",
+    )
+
     # Register agent lifecycle notification hooks
     ctx.register_hook("post_llm_call", _on_post_llm_call)
     ctx.register_hook("pre_approval_request", _on_pre_approval_request)
@@ -1213,7 +1308,7 @@ async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
         _plugin_logger.info("[SLASH /pushover-test] sent successfully")
         return "Pushover test notification sent successfully."
     # Give actionable reason instead of generic failure
-    if not _NOTIFY_ENABLED:
+    if not _PUSHOVER_NOTIFY_ENABLED:
         _plugin_logger.warning("[SLASH /pushover-test] aborted: notifications disabled")
         return "Notifications are disabled (PUSHOVER_NOTIFY=False). Enable them and try again."
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
@@ -1223,3 +1318,25 @@ async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
         return "Pushover credentials not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY env vars."
     _plugin_logger.warning("[SLASH /pushover-test] failed — check plugin logs for details")
     return "Pushover send failed — check plugin logs for details."
+
+
+async def _handle_native_test_slash(raw_args: str) -> Optional[str]:
+    """Handle /native-test <message> — send a test native desktop notification.
+
+    Usage:
+        /native-test                    — sends default test message
+        /native-test "Custom message"   — sends custom message
+    """
+    message = raw_args.strip() or "Native desktop notification test successful."
+    _plugin_logger.info("[SLASH /native-test] message=%s", message[:100])
+
+    if not _NOTIFY_NATIVE_ENABLED:
+        _plugin_logger.warning("[SLASH /native-test] aborted: native notifications disabled")
+        return "Native notifications are disabled. Set PUSHOVER_NOTIFY_NATIVE=true or run the wizard."
+
+    success = _send_native_notification("Hermes Native Test", message)
+    if success:
+        _plugin_logger.info("[SLASH /native-test] sent successfully")
+        return "Native desktop notification sent successfully. Check your desktop for the pop-up."
+    _plugin_logger.warning("[SLASH /native-test] notify-send not available")
+    return "notify-send not found — you may be on a headless server or missing libnotify."
