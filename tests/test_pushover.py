@@ -446,7 +446,7 @@ class TestNotificationStateFiltering:
         mod._NOTIFY_ENABLED = True
 
         try:
-            with patch.object(mod, "_send_pushover_sync", capture):
+            with patch.object(mod, "_send_pushover_notification", capture):
                 mod._on_post_llm_call(**kwargs)
             return len(sent) > 0
         finally:

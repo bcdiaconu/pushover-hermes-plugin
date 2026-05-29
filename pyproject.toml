@@ -3,10 +3,10 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.package-data]
-"adapter" = ["plugin.yaml"]
+"pushover_hermes_plugin" = ["plugin.yaml"]
 
-[tool.setuptools]
-py-modules = ["adapter"]
+[tool.setuptools.packages.find]
+include = ["pushover_hermes_plugin*"]
 
 [project]
 name = "pushover-hermes-plugin"
@@ -23,4 +23,4 @@ dependencies = ["aiohttp>=3.9"]
 notify = ["requests>=2.28"]
 
 [project.entry-points."hermes_agent.plugins"]
-pushover-hermes-plugin = "adapter"
+pushover-hermes-plugin = "pushover_hermes_plugin"

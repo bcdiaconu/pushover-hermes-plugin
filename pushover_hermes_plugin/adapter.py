@@ -378,19 +378,23 @@ def _log_notify_init():
 atexit.register(_log_notify_init)
 
 
-def _send_pushover_notification(title: str, message: str) -> None:
+def _send_pushover_notification(title: str, message: str) -> bool:
     """Send a Pushover notification synchronously (for sync hook handlers).
 
     Uses ``requests`` (stdlib fallback via urllib) so hook handlers
-    don't need an async event loop.  Fires and forgets — errors are
-    silently swallowed so notifications never block the main flow.
+    don't need an async event loop.  Hook callers ignore the return
+    value — notifications never block the main flow.  The test command
+    relies on the return value for round-trip verification.
+
+    Returns:
+        True if the Pushover API responded with status 200, False otherwise.
     """
     _plugin_logger.info("[PUSHOVER_SEND] ENTRY: title=%s, msg_len=%d", title, len(message))
-    
+
     if not _NOTIFY_ENABLED:
         _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _NOTIFY_ENABLED is False")
-        return
-    
+        return False
+
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
     user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
     _plugin_logger.info("[PUSHOVER_SEND] creds: app_token=%s, user_key=%s",
@@ -398,7 +402,7 @@ def _send_pushover_notification(title: str, message: str) -> None:
                         user_key[:6] + "..." if user_key else "(empty)")
     if not app_token or not user_key:
         _plugin_logger.error("[PUSHOVER_SEND] ABORT: missing credentials")
-        return
+        return False
 
     if len(message) > MAX_MESSAGE_LENGTH:
         message = message[: MAX_MESSAGE_LENGTH - 3] + "..."
@@ -417,19 +421,22 @@ def _send_pushover_notification(title: str, message: str) -> None:
         _plugin_logger.info("[PUSHOVER_SEND] using requests library")
         resp = _req.post(PUSHOVER_API_URL, data=payload, timeout=10)
         _plugin_logger.info("[PUSHOVER_SEND] HTTP status=%s, body=%s", resp.status_code, resp.text[:200])
+        return resp.status_code == 200
     except ImportError:
         _plugin_logger.info("[PUSHOVER_SEND] requests not found, falling back to urllib")
-        # Fallback to urllib if requests is not available
         try:
             import urllib.parse as _urp
             import urllib.request as _ur
             data = _urp.urlencode(payload).encode("utf-8")
             resp = _ur.urlopen(PUSHOVER_API_URL, data=data, timeout=10)
             _plugin_logger.info("[PUSHOVER_SEND] urllib success: status=%s", resp.status)
+            return resp.status == 200
         except Exception as e:
             _plugin_logger.error("[PUSHOVER_SEND] urllib FAILED: %s", e)
+            return False
     except Exception as e:
         _plugin_logger.error("[PUSHOVER_SEND] requests FAILED: %s", e)
+        return False
 
 
 def _is_question(response: str) -> bool:
@@ -869,39 +876,29 @@ def register(ctx) -> None:
 async def _handle_pushover_test_slash(raw_args: str) -> Optional[str]:
     """Handle /pushover-test <message> — send a test push notification.
 
+    Uses the same code path as hook notifications so the result
+    exercises the exact logic (_NOTIFY_ENABLED, credential checks,
+    truncation, device targeting) that the plugin relies on.
+
     Usage:
         /pushover-test                    — sends default test message
         /pushover-test "Custom message"   — sends custom message
     """
-    import json
-    import aiohttp
+    message = raw_args.strip() or "Pushover test successful."
+    _plugin_logger.info("[SLASH /pushover-test] message=%s", message[:100])
 
+    success = _send_pushover_notification("Hermes Pushover Test", message)
+    if success:
+        _plugin_logger.info("[SLASH /pushover-test] sent successfully")
+        return "Pushover test notification sent successfully."
+    # Give actionable reason instead of generic failure
+    if not _NOTIFY_ENABLED:
+        _plugin_logger.warning("[SLASH /pushover-test] aborted: notifications disabled")
+        return "Notifications are disabled (PUSHOVER_NOTIFY=False). Enable them and try again."
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
     user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
-
     if not app_token or not user_key:
+        _plugin_logger.warning("[SLASH /pushover-test] aborted: missing credentials")
         return "Pushover credentials not configured. Set PUSHOVER_APP_TOKEN and PUSHOVER_USER_KEY env vars."
-
-    message = raw_args.strip() or "Pushover test successful."
-    if len(message) > 1024:
-        message = message[:1021] + "..."
-
-    payload = {
-        "token": app_token,
-        "user": user_key,
-        "message": message,
-        "title": "Hermes Pushover Test",
-    }
-
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(PUSHOVER_API_URL, data=payload) as resp:
-                result = await resp.json()
-                if resp.status == 200 and result.get("status") == 1:
-                    return f"Pushover test sent successfully (request: {result.get('request')})"
-                errors = result.get("errors", [result.get("message", "Unknown error")])
-                return f"Pushover send failed: {errors[0]}"
-    except aiohttp.ClientError as e:
-        return f"Pushover HTTP error: {e}"
-    except Exception as e:
-        return f"Pushover error: {type(e).__name__}: {e}"
+    _plugin_logger.warning("[SLASH /pushover-test] failed — check plugin logs for details")
+    return "Pushover send failed — check plugin logs for details."
