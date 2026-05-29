@@ -1305,13 +1305,14 @@ def register(ctx) -> None:
     ctx.register_command(
         "notifications",
         handler=_handle_notifications_slash,
-        description="Test, enable, disable, or save notification settings (pushover/native).",
-        args_hint="[test|enable|disable|save] [pushover|native]",
+        description="Test, enable, disable, save, or check notification status (pushover/native).",
+        args_hint="[test|enable|disable|save|status] [pushover|native]",
         subcommands={
             "test": ("pushover", "native"),
             "enable": ("pushover", "native"),
             "disable": ("pushover", "native"),
             "save": (),
+            "status": (),
         },
     )
 
@@ -1335,6 +1336,7 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
 
     Usage:
         /notifications                   — show status and usage
+        /notifications status            — show notification status
         /notifications test pushover     — send a test pushover notification
         /notifications test native       — send a test native notification
         /notifications enable pushover   — enable pushover notifications
@@ -1359,9 +1361,10 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
             f"  Pushover: {'enabled' if push_enabled else 'disabled'}",
             f"  Native:   {'enabled' if native_enabled else 'disabled'}",
             "",
-            "Usage: /notifications <test|enable|disable|save> [pushover|native]",
+            "Usage: /notifications <test|enable|disable|save|status> [pushover|native]",
             "",
             "Examples:",
+            "  /notifications status              — show notification status",
             "  /notifications test pushover   — send a test pushover notification",
             "  /notifications test native     — send a test native notification",
             "  /notifications enable pushover — enable pushover notifications",
@@ -1400,11 +1403,19 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
         _plugin_logger.info("[NOTIFICATIONS_CMD] save requested")
         return _save_settings()
 
+    elif action == "status":
+        _plugin_logger.info("[NOTIFICATIONS_CMD] status requested")
+        return (
+            "Notifications status:\n"
+            f"  Pushover: {'enabled' if _pushover_notify_enabled else 'disabled'}\n"
+            f"  Native:   {'enabled' if _notify_native_enabled else 'disabled'}"
+        )
+
     else:
         _plugin_logger.warning("[NOTIFICATIONS_CMD] unknown action: %r", action)
         return (
             f"Unknown action '{action}'.\n"
-            "Usage: /notifications <test|enable|disable|save> [pushover|native]"
+            "Usage: /notifications <test|enable|disable|save|status> [pushover|native]"
         )
 
 
