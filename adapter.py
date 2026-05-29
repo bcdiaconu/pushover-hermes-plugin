@@ -319,7 +319,7 @@ class PushoverAdapter(BasePlatformAdapter):
             logger.info("send_clarify: building notification (minimal=%s)", _NOTIFY_QUESTION)
             title, message = _build_clarify_notification({"question": question, "choices": choices or []})
             logger.info("send_clarify: sending pushover notification: title=%s", title)
-            _send_pushover_sync(title, message)
+            _send_pushover_notification(title, message)
             logger.info("send_clarify: pushover notification sent")
         else:
             logger.info("send_clarify: skipping notification (enabled=%s, questions_in_set=%s)",
@@ -378,7 +378,7 @@ def _log_notify_init():
 atexit.register(_log_notify_init)
 
 
-def _send_pushover_sync(title: str, message: str) -> None:
+def _send_pushover_notification(title: str, message: str) -> None:
     """Send a Pushover notification synchronously (for sync hook handlers).
 
     Uses ``requests`` (stdlib fallback via urllib) so hook handlers
@@ -563,7 +563,7 @@ def _on_post_llm_call(**kwargs: Any) -> None:
             full="Finished",
         )
 
-    _send_pushover_sync(title, message)
+    _send_pushover_notification(title, message)
 
 
 def _on_pre_approval_request(**kwargs: Any) -> None:
@@ -605,7 +605,7 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
         full=detailed,
     )
 
-    _send_pushover_sync("Hermes — Approval Needed", message)
+    _send_pushover_notification("Hermes — Approval Needed", message)
 
 
 def _on_post_approval_response(**kwargs: Any) -> None:
@@ -634,7 +634,7 @@ def _on_post_approval_response(**kwargs: Any) -> None:
             summary=f"{verb}: {cmd_short}",
             full=f"{verb}: {cmd_short}",
         )
-        _send_pushover_sync("Hermes — Approval Response", message)
+        _send_pushover_notification("Hermes — Approval Response", message)
 
 
 def _build_clarify_notification(args: Dict[str, Any]) -> tuple[str, str]:
@@ -717,7 +717,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         _plugin_logger.info("[PRE_TOOL] sending clarify notification")
         title, message = _build_clarify_notification(args)
         _plugin_logger.info("[PRE_TOOL] pushover: title=%s", title)
-        _send_pushover_sync(title, message)
+        _send_pushover_notification(title, message)
         _plugin_logger.info("[PRE_TOOL] pushover SENT for clarify")
 
     # --- Terminal sudo: notify if command will prompt for password ---
@@ -743,7 +743,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
                     full=f"Sudo command requires password: {command[:300]}",
                 )
                 _plugin_logger.info("[PRE_TOOL] calling _send_pushover_sync for sudo")
-                _send_pushover_sync(
+                _send_pushover_notification(
                     "Hermes — Sudo Password Needed",
                     msg,
                 )
@@ -811,7 +811,7 @@ def _on_post_tool_call(**kwargs: Any) -> None:
         if reason:
             parts.append(reason[:400])
         message = " | ".join(parts) if parts else "Kanban task blocked — needs your input"
-        _send_pushover_sync("Hermes — Kanban Blocked", message)
+        _send_pushover_notification("Hermes — Kanban Blocked", message)
 
 
 def register(ctx) -> None:
