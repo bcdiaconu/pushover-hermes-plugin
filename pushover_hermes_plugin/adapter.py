@@ -729,12 +729,16 @@ def _load_settings() -> None:
 
 def _save_settings() -> str:
     """Persist current notification settings to disk."""
+    _plugin_logger.debug("[SETTINGS] persisting settings to %s", _SETTINGS_FILE)
+    _plugin_logger.debug("[SETTINGS] pushover_enabled=%r, native_enabled=%r",
+                         _pushover_notify_enabled, _notify_native_enabled)
     data = {
         "pushover_enabled": _pushover_notify_enabled,
         "native_enabled": _notify_native_enabled,
     }
     _SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n")
     _plugin_logger.info("[SETTINGS] saved: %s", data)
+    _plugin_logger.debug("[SETTINGS] file written successfully: %s", _SETTINGS_FILE)
     return (
         f"Settings saved to {_SETTINGS_FILE}:\n"
         f"  Pushover: {'enabled' if _pushover_notify_enabled else 'disabled'}\n"
@@ -1400,16 +1404,24 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
         return f"{target.title()} notifications {'enabled' if enabled else 'disabled'}."
 
     elif action == "save":
-        _plugin_logger.info("[NOTIFICATIONS_CMD] save requested")
-        return _save_settings()
+        _plugin_logger.info("[NOTIFICATIONS_CMD] save started")
+        _plugin_logger.debug("[NOTIFICATIONS_CMD] current state: pushover=%r, native=%r",
+                             _pushover_notify_enabled, _notify_native_enabled)
+        result = _save_settings()
+        _plugin_logger.info("[NOTIFICATIONS_CMD] save completed")
+        return result
 
     elif action == "status":
         _plugin_logger.info("[NOTIFICATIONS_CMD] status requested")
-        return (
+        _plugin_logger.debug("[NOTIFICATIONS_CMD] pushover=%r, native=%r",
+                             _pushover_notify_enabled, _notify_native_enabled)
+        result = (
             "Notifications status:\n"
             f"  Pushover: {'enabled' if _pushover_notify_enabled else 'disabled'}\n"
             f"  Native:   {'enabled' if _notify_native_enabled else 'disabled'}"
         )
+        _plugin_logger.debug("[NOTIFICATIONS_CMD] status response generated")
+        return result
 
     else:
         _plugin_logger.warning("[NOTIFICATIONS_CMD] unknown action: %r", action)
