@@ -147,6 +147,7 @@ def interactive_setup() -> None:
     current_enabled = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower()
     enabled_display = f" [{current_enabled}]" if current_enabled else ""
     enable_val = input(f"  Enable notifications{enabled_display} (true/false): ").strip().lower()
+
     if enable_val in {"true", "false"}:
         updates["PUSHOVER_NOTIFY_ENABLED"] = enable_val
     elif enable_val:
@@ -476,6 +477,19 @@ def _extract_error(response: str) -> str:
     return response.split("\n")[0].strip()
 
 
+import re
+_SUDO_PLAIN_RE = re.compile(
+    r"(?:^|[;&|`\n]|&&|\|\|)\s*sudo\b(?!\s+-(?:S|s|--stdin|--askpass))"
+)
+
+
+def _is_sudo_password_prompt(command: str) -> bool:
+    """Detect `sudo` commands that will prompt for password."""
+    result = bool(_SUDO_PLAIN_RE.search(command))
+    _plugin_logger.info("[SUDO_CHECK] command=%s, regex_match=%s", command[:100], result)
+    return result
+
+
 def _notify_message(minimal: str, summary: str, full: str) -> str:
     """Select message text based on verbosity setting.
 
@@ -700,11 +714,42 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     # Must come BEFORE the session_id guard — in CLI mode, session_id
     # may not be populated yet, but we still want to notify.
     if tool_name == "clarify" and "questions" in _NOTIFY_STATE_SET:
-        _plugin_logger.info("  -> sending clarify notification")
+        _plugin_logger.info("[PRE_TOOL] sending clarify notification")
         title, message = _build_clarify_notification(args)
-        _plugin_logger.info("  -> pushover: title=%s", title)
+        _plugin_logger.info("[PRE_TOOL] pushover: title=%s", title)
         _send_pushover_sync(title, message)
-        _plugin_logger.info("  -> pushover SENT")
+        _plugin_logger.info("[PRE_TOOL] pushover SENT for clarify")
+
+    # --- Terminal sudo: notify if command will prompt for password ---
+    if tool_name == "terminal":
+        _plugin_logger.info("[PRE_TOOL] tool=terminal detected")
+        command = str(args.get("command") or "")
+        _plugin_logger.info("[PRE_TOOL] terminal command=%s", command[:200])
+        _plugin_logger.info(
+            "[PRE_TOOL] terminal check: blockers_in_set=%s, sudo_password_in_env=%s, _NOTIFY_ENABLED=%s",
+            "blockers" in _NOTIFY_STATE_SET,
+            "SUDO_PASSWORD" in os.environ,
+            _NOTIFY_ENABLED,
+        )
+        if "blockers" in _NOTIFY_STATE_SET:
+            _plugin_logger.info("[PRE_TOOL] blockers IN state set - checking for sudo")
+            is_sudo = _is_sudo_password_prompt(command)
+            _plugin_logger.info("[PRE_TOOL] _is_sudo_password_prompt returned: %s", is_sudo)
+            if is_sudo:
+                _plugin_logger.info("[PRE_TOOL] SUDO PASSWORD PROMPT detected: %s", command[:80])
+                msg = _notify_message(
+                    minimal="Sudo password needed — the command will timeout without input",
+                    summary=f"Sudo command requires password: {command[:120]}",
+                    full=f"Sudo command requires password: {command[:300]}",
+                )
+                _plugin_logger.info("[PRE_TOOL] calling _send_pushover_sync for sudo")
+                _send_pushover_sync(
+                    "Hermes — Sudo Password Needed",
+                    msg,
+                )
+                _plugin_logger.info("[PRE_TOOL] _send_pushover_sync returned")
+        else:
+            _plugin_logger.info("[PRE_TOOL] blockers NOT in state set - skipping sudo check")
 
     if not session_id:
         _plugin_logger.info("[PRE_TOOL] no session_id - returning early")
