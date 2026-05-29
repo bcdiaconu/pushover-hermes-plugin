@@ -364,6 +364,18 @@ _NOTIFY_DEVICE = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
 _NOTIFY_STATES = os.getenv("PUSHOVER_NOTIFY_STATES", "all").lower()  # space-separated states or "all"
 _NOTIFY_STATE_SET = set(_NOTIFY_STATES.split()) if _NOTIFY_STATES != "all" else {"finished", "questions", "errors", "approvals", "blockers"}
 
+# Log initialization state to dedicated file (will appear once module is loaded)
+import atexit
+def _log_notify_init():
+    _plugin_logger.info(
+        "[INIT] _NOTIFY_ENABLED=%s, _NOTIFY_QUESTION=%s, _NOTIFY_DEVICE=%s, _NOTIFY_STATES=%s, _NOTIFY_STATE_SET=%s",
+        _NOTIFY_ENABLED, _NOTIFY_QUESTION, _NOTIFY_DEVICE, _NOTIFY_STATES, _NOTIFY_STATE_SET
+    )
+    _plugin_logger.info("[INIT] env vars present: PUSHOVER_APP_TOKEN=%s, PUSHOVER_USER_KEY=%s, SUDO_PASSWORD=%s",
+                        bool(os.getenv("PUSHOVER_APP_TOKEN")), bool(os.getenv("PUSHOVER_USER_KEY")),
+                        "SUDO_PASSWORD" in os.environ)
+atexit.register(_log_notify_init)
+
 
 def _send_pushover_sync(title: str, message: str) -> None:
     """Send a Pushover notification synchronously (for sync hook handlers).
@@ -372,9 +384,19 @@ def _send_pushover_sync(title: str, message: str) -> None:
     don't need an async event loop.  Fires and forgets — errors are
     silently swallowed so notifications never block the main flow.
     """
+    _plugin_logger.info("[PUSHOVER_SEND] ENTRY: title=%s, msg_len=%d", title, len(message))
+    
+    if not _NOTIFY_ENABLED:
+        _plugin_logger.warning("[PUSHOVER_SEND] ABORT: _NOTIFY_ENABLED is False")
+        return
+    
     app_token = os.getenv("PUSHOVER_APP_TOKEN", "").strip()
     user_key = os.getenv("PUSHOVER_USER_KEY", "").strip()
+    _plugin_logger.info("[PUSHOVER_SEND] creds: app_token=%s, user_key=%s",
+                        app_token[:6] + "..." if app_token else "(empty)",
+                        user_key[:6] + "..." if user_key else "(empty)")
     if not app_token or not user_key:
+        _plugin_logger.error("[PUSHOVER_SEND] ABORT: missing credentials")
         return
 
     if len(message) > MAX_MESSAGE_LENGTH:
@@ -391,18 +413,22 @@ def _send_pushover_sync(title: str, message: str) -> None:
 
     try:
         import requests as _req
-        _req.post(PUSHOVER_API_URL, data=payload, timeout=10)
+        _plugin_logger.info("[PUSHOVER_SEND] using requests library")
+        resp = _req.post(PUSHOVER_API_URL, data=payload, timeout=10)
+        _plugin_logger.info("[PUSHOVER_SEND] HTTP status=%s, body=%s", resp.status_code, resp.text[:200])
     except ImportError:
+        _plugin_logger.info("[PUSHOVER_SEND] requests not found, falling back to urllib")
         # Fallback to urllib if requests is not available
         try:
             import urllib.parse as _urp
             import urllib.request as _ur
             data = _urp.urlencode(payload).encode("utf-8")
-            _ur.urlopen(PUSHOVER_API_URL, data=data, timeout=10)
-        except Exception:
-            pass
-    except Exception:
-        pass  # Fire-and-forget — never block the hook
+            resp = _ur.urlopen(PUSHOVER_API_URL, data=data, timeout=10)
+            _plugin_logger.info("[PUSHOVER_SEND] urllib success: status=%s", resp.status)
+        except Exception as e:
+            _plugin_logger.error("[PUSHOVER_SEND] urllib FAILED: %s", e)
+    except Exception as e:
+        _plugin_logger.error("[PUSHOVER_SEND] requests FAILED: %s", e)
 
 
 def _is_question(response: str) -> bool:
@@ -531,6 +557,13 @@ def _on_pre_approval_request(**kwargs: Any) -> None:
 
     Respects PUSHOVER_NOTIFY_STATES for per-state filtering.
     """
+    _plugin_logger.info(
+        "PRE_APPROVAL pattern=%s command=%s notify=%s approvals_in_set=%s",
+        kwargs.get("pattern_key"),
+        (kwargs.get("command") or "")[:80],
+        _NOTIFY_ENABLED,
+        "approvals" in _NOTIFY_STATE_SET,
+    )
     if not _NOTIFY_ENABLED:
         return
     if "approvals" not in _NOTIFY_STATE_SET:
@@ -629,6 +662,8 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
 
     Expected kwargs: tool_name, args, task_id, session_id, tool_call_id
     """
+    _plugin_logger.info("[PRE_TOOL] ENTRY - kwargs keys: %s", list(kwargs.keys()))
+    
     tool_name = str(kwargs.get("tool_name") or "unknown")
     args = kwargs.get("args") or {}
     session_id = str(kwargs.get("session_id") or "")
@@ -637,8 +672,8 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
 
     # Log every tool call
     _plugin_logger.info(
-        "PRE_TOOL [%s] tool=%s task=%s call=%s notify=%s | args_keys=%s",
-        session_id, tool_name, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
+        "[PRE_TOOL] tool=%s session=%s task=%s call=%s notify=%s | args_keys=%s",
+        tool_name, session_id, task_id, tool_call_id, _NOTIFY_ENABLED, list(args.keys())
     )
 
     # Redact sensitive values in args
@@ -654,9 +689,12 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
     if session_id:
         _TOOL_CALL_TIMES[f"{session_id}:{tool_call_id}:{tool_name}"] = time.time()
 
-    # --- Early returns ---
+    # --- Early return: notifications disabled ---
     if not _NOTIFY_ENABLED:
+        _plugin_logger.info("[PRE_TOOL] ABORT: _NOTIFY_ENABLED is False")
         return
+
+    _plugin_logger.info("[PRE_TOOL] Notifications ENABLED - continuing")
 
     # --- Clarify: notify BEFORE the tool blocks ---
     # Must come BEFORE the session_id guard — in CLI mode, session_id
@@ -669,6 +707,7 @@ def _on_pre_tool_call(**kwargs: Any) -> None:
         _plugin_logger.info("  -> pushover SENT")
 
     if not session_id:
+        _plugin_logger.info("[PRE_TOOL] no session_id - returning early")
         return
 
 
