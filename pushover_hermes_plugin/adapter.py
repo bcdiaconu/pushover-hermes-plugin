@@ -33,6 +33,7 @@ Lifecycle notification env vars:
 """
 
 import atexit
+import json
 import logging
 import os
 import re
@@ -703,6 +704,48 @@ _notify_state_set = (
 )
 
 
+# Persistent settings file — survives plugin reloads
+_SETTINGS_DIR = Path.home() / ".hermes" / "plugins" / "pushover"
+_SETTINGS_DIR.mkdir(parents=True, exist_ok=True)
+_SETTINGS_FILE = _SETTINGS_DIR / "settings.json"
+
+
+def _load_settings() -> None:
+    """Load persisted settings from disk, overriding env var defaults."""
+    global _pushover_notify_enabled, _notify_native_enabled
+    if not _SETTINGS_FILE.exists():
+        return
+    try:
+        data = json.loads(_SETTINGS_FILE.read_text())
+        if "pushover_enabled" in data:
+            _pushover_notify_enabled = bool(data["pushover_enabled"])
+            _plugin_logger.debug("[SETTINGS] loaded pushover_enabled=%s from file", _pushover_notify_enabled)
+        if "native_enabled" in data:
+            _notify_native_enabled = bool(data["native_enabled"])
+            _plugin_logger.debug("[SETTINGS] loaded native_enabled=%s from file", _notify_native_enabled)
+    except Exception as exc:
+        _plugin_logger.warning("[SETTINGS] failed to load settings file: %s", exc)
+
+
+def _save_settings() -> str:
+    """Persist current notification settings to disk."""
+    data = {
+        "pushover_enabled": _pushover_notify_enabled,
+        "native_enabled": _notify_native_enabled,
+    }
+    _SETTINGS_FILE.write_text(json.dumps(data, indent=2) + "\n")
+    _plugin_logger.info("[SETTINGS] saved: %s", data)
+    return (
+        f"Settings saved to {_SETTINGS_FILE}:\n"
+        f"  Pushover: {'enabled' if _pushover_notify_enabled else 'disabled'}\n"
+        f"  Native:   {'enabled' if _notify_native_enabled else 'disabled'}"
+    )
+
+
+# Load persisted settings (override env var defaults)
+_load_settings()
+
+
 # Log initialization state to dedicated file (will appear once module is loaded)
 def _log_notify_init():
     _plugin_logger.info(
@@ -1262,12 +1305,13 @@ def register(ctx) -> None:
     ctx.register_command(
         "notifications",
         handler=_handle_notifications_slash,
-        description="Test, enable, or disable notifications (pushover/native).",
-        args_hint="[test|enable|disable] [pushover|native]",
+        description="Test, enable, disable, or save notification settings (pushover/native).",
+        args_hint="[test|enable|disable|save] [pushover|native]",
         subcommands={
             "test": ("pushover", "native"),
             "enable": ("pushover", "native"),
             "disable": ("pushover", "native"),
+            "save": (),
         },
     )
 
@@ -1315,13 +1359,14 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
             f"  Pushover: {'enabled' if push_enabled else 'disabled'}",
             f"  Native:   {'enabled' if native_enabled else 'disabled'}",
             "",
-            "Usage: /notifications <test|enable|disable> <pushover|native>",
+            "Usage: /notifications <test|enable|disable|save> [pushover|native]",
             "",
             "Examples:",
             "  /notifications test pushover   — send a test pushover notification",
             "  /notifications test native     — send a test native notification",
             "  /notifications enable pushover — enable pushover notifications",
             "  /notifications disable native  — disable native notifications",
+            "  /notifications save            — persist current settings to disk",
         ]
         return "\n".join(lines)
 
@@ -1351,11 +1396,15 @@ async def _handle_notifications_slash(raw_args: str) -> Optional[str]:
             _notify_native_enabled = enabled
         return f"{target.title()} notifications {'enabled' if enabled else 'disabled'}."
 
+    elif action == "save":
+        _plugin_logger.info("[NOTIFICATIONS_CMD] save requested")
+        return _save_settings()
+
     else:
         _plugin_logger.warning("[NOTIFICATIONS_CMD] unknown action: %r", action)
         return (
             f"Unknown action '{action}'.\n"
-            "Usage: /notifications <test|enable|disable> <pushover|native>"
+            "Usage: /notifications <test|enable|disable|save> [pushover|native]"
         )
 
 
