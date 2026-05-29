@@ -116,104 +116,21 @@ def is_connected(config) -> bool:
     return validate_config(config)
 
 
-def interactive_setup() -> None:
-    """Prompt for Pushover credentials and notification prefs, write to ~/.hermes/.env.
+def _load_env(env_path: str) -> Dict[str, str]:
+    """Read key=value pairs from ~/.hermes/.env."""
+    result: Dict[str, str] = {}
+    if os.path.exists(env_path):
+        with open(env_path) as f:
+            for line in f:
+                line = line.strip()
+                if "=" in line and not line.startswith("#"):
+                    key, _, value = line.partition("=")
+                    result[key.strip()] = value.strip()
+    return result
 
-    Called by ``hermes gateway setup`` when the user picks Pushover.
-    Inlines prompts rather than importing _prompt_env_var from
-    hermes_cli.gateway (private helper, fragile across upstream updates).
-    Writes to ~/.hermes/.env — standard hermes env file location.
-    """
-    print()
-    print("  \u2500\u2500\u2500 \U0001f514 Pushover Setup \u2500\u2500\u2500")
-    print("  1. Log in at https://pushover.net")
-    print("  2. Your User Key is on the front page \u2014 copy it")
-    print("  3. Create an app at https://pushover.net/apps \u2192 Create New Application")
-    print("  4. Copy the API Token for your new app")
-    print()
 
-    env_path = os.path.expanduser("~/.hermes/.env")
-    updates: Dict[str, str] = {}
-
-    # --- Credentials ---
-    for var, prompt in [
-        ("PUSHOVER_APP_TOKEN", "Pushover App Token (from pushover.net/apps)"),
-        ("PUSHOVER_USER_KEY",  "Pushover User Key (from pushover.net front page)"),
-        ("PUSHOVER_ALLOWED_USERS", "Allowed user keys, comma-separated (leave empty = allow all)"),
-    ]:
-        current = os.getenv(var, "")
-        display = f" [{current}]" if current else ""
-        value = input(f"  {prompt}{display}: ").strip()
-        if value:
-            updates[var] = value
-
-    # --- Agent lifecycle notifications ---
-    print()
-    print("  \u2500\u2500\u2500 Agent Lifecycle Notifications \u2500\u2500\u2500")
-    print("  Get Pushover alerts when Hermes finishes work, asks")
-    print("  questions, hits errors, or needs command approval.")
-    print()
-
-    current_enabled = os.getenv("PUSHOVER_NOTIFY_ENABLED", "").lower()
-    enabled_display = f" [{current_enabled}]" if current_enabled else ""
-    enable_val = input(f"  Enable notifications{enabled_display} (true/false): ").strip().lower()
-
-    if enable_val in {"true", "false"}:
-        updates["PUSHOVER_NOTIFY_ENABLED"] = enable_val
-    elif enable_val:
-        print("  Invalid value, skipping.")
-
-    if updates.get("PUSHOVER_NOTIFY_ENABLED", os.getenv("PUSHOVER_NOTIFY_ENABLED", "")).lower() in {"true", "1", "yes"}:
-        # Question detail level
-        print()
-        current_q = os.getenv("PUSHOVER_NOTIFY_QUESTION", "full")
-        print(f"  Question detail level [{current_q}]:")
-        print("    full     — include the actual question text")
-        print("    summary  — include only the first line")
-        print("    minimal  — just 'I have a question' (privacy)")
-        q_val = input("  > ").strip().lower()
-        if q_val in {"full", "summary", "minimal"}:
-            updates["PUSHOVER_NOTIFY_QUESTION"] = q_val
-        elif q_val:
-            print("  Invalid value, skipping.")
-
-        # Notification states
-        print()
-        print("  Which events should trigger notifications?")
-        print("    (space-separated: finished, questions, errors, pre-approval, post-approval, blockers)")
-        print("    Presets:")
-        print("      all    — everything including post-approval")
-        print("      usual  — common events (excludes post-approval, the noisy one)")
-        current_states = os.getenv("PUSHOVER_NOTIFY_STATES", "all")
-        states_val = input(f"  States [{current_states}]: ").strip()
-        valid_states = {"finished", "questions", "errors", "pre-approval", "post-approval", "blockers", "all", "usual"}
-        if states_val:
-            parsed = set(states_val.replace(",", " ").split())
-            if parsed.issubset(valid_states):
-                if parsed == {"all"}:
-                    updates["PUSHOVER_NOTIFY_STATES"] = "all"
-                elif parsed == {"usual"}:
-                    updates["PUSHOVER_NOTIFY_STATES"] = "usual"
-                elif "all" in parsed or "usual" in parsed:
-                    parsed.discard("all")
-                    parsed.discard("usual")
-                    updates["PUSHOVER_NOTIFY_STATES"] = " ".join(sorted(parsed))
-                else:
-                    updates["PUSHOVER_NOTIFY_STATES"] = " ".join(sorted(parsed))
-            else:
-                print("  Invalid state(s), skipping.")
-
-        # Device filter
-        current_device = os.getenv("PUSHOVER_NOTIFY_DEVICE", "")
-        device_display = f" [{current_device}]" if current_device else ""
-        device_val = input(f"  Device filter (leave empty = all devices){device_display}: ").strip()
-        if device_val != current_device:
-            updates["PUSHOVER_NOTIFY_DEVICE"] = device_val
-
-    if not updates:
-        print("  No changes.")
-        return
-
+def _save_env(env_path: str, updates: Dict[str, str]) -> None:
+    """Update key=value pairs in ~/.hermes/.env (upsert semantics)."""
     lines: list[str] = []
     if os.path.exists(env_path):
         with open(env_path) as f:
@@ -233,7 +150,369 @@ def interactive_setup() -> None:
     os.makedirs(os.path.dirname(env_path), exist_ok=True)
     with open(env_path, "w") as f:
         f.writelines(lines)
+
+
+def _resolve_current(var: str, env: Dict[str, str]) -> str:
+    """Get current value: env var first, then .env file, then empty."""
+    return os.getenv(var, env.get(var, ""))
+
+
+def _load_current_config(env_path: str) -> Dict[str, Any]:
+    """Load current Pushover config from env vars + .env file into a flat dict."""
+    env = _load_env(env_path)
+    cur_states = _resolve_current("PUSHOVER_NOTIFY_STATES", env) or "usual"
+    usual_states = _USUAL_STATE_SET
+    all_states = usual_states | {"post-approval"}
+    if cur_states == "usual":
+        cur_state_set = usual_states
+    elif cur_states == "all":
+        cur_state_set = all_states
+    else:
+        cur_state_set = set(cur_states.split())
+
+    return {
+        "env_path": env_path,
+        "env": env,
+        "app_token": _resolve_current("PUSHOVER_APP_TOKEN", env),
+        "user_key": _resolve_current("PUSHOVER_USER_KEY", env),
+        "allowed": _resolve_current("PUSHOVER_ALLOWED_USERS", env),
+        "enabled": _resolve_current("PUSHOVER_NOTIFY_ENABLED", env).lower() in {"true", "1", "yes"},
+        "question": _resolve_current("PUSHOVER_NOTIFY_QUESTION", env) or "full",
+        "states": cur_states,
+        "state_set": cur_state_set,
+        "device": _resolve_current("PUSHOVER_NOTIFY_DEVICE", env),
+        "usual_states": usual_states,
+        "all_states": all_states,
+    }
+
+
+def _save_config(cfg: Dict[str, Any], result: Dict[str, Any]) -> None:
+    """Save wizard results to .env, writing only changed values.
+
+    Both _setup_inquirer() and _setup_legacy() call this with their
+    collected results.  The function computes the diff against the
+    current config and performs the write.
+
+    Args:
+        cfg: Current config dict from _load_current_config().
+        result: Wizard-collected values (same keys as cfg except
+                without env/state_set/usual_states/all_states).
+    """
+    env_path = cfg["env_path"]
+    updates: Dict[str, str] = {}
+
+    # Credentials
+    if result.get("app_token") != cfg["app_token"]:
+        updates["PUSHOVER_APP_TOKEN"] = result["app_token"]
+    if result.get("user_key") != cfg["user_key"]:
+        updates["PUSHOVER_USER_KEY"] = result["user_key"]
+    if result.get("allowed") != cfg["allowed"]:
+        updates["PUSHOVER_ALLOWED_USERS"] = result["allowed"]
+
+    # Notifications
+    if result.get("enabled") != cfg["enabled"]:
+        updates["PUSHOVER_NOTIFY_ENABLED"] = str(result["enabled"]).lower()
+
+    if result.get("enabled"):
+        if result.get("question") != cfg["question"]:
+            updates["PUSHOVER_NOTIFY_QUESTION"] = result["question"]
+        if result.get("states") != cfg["states"]:
+            updates["PUSHOVER_NOTIFY_STATES"] = result["states"]
+        if result.get("device") != cfg["device"]:
+            updates["PUSHOVER_NOTIFY_DEVICE"] = result["device"]
+
+    if not updates:
+        print("  No changes.")
+        return
+    _save_env(env_path, updates)
     print(f"  Saved to {env_path}")
+
+
+def interactive_setup() -> None:
+    """Dispatch to the prompt_toolkit wizard or legacy fallback."""
+    try:
+        from prompt_toolkit.shortcuts import radiolist_dialog  # noqa: F401
+        _plugin_logger.info("[SETUP] Starting prompt_toolkit wizard")
+        _setup_prompt()
+    except Exception as e:
+        _plugin_logger.warning("[SETUP] prompt_toolkit unavailable (%s) — using legacy wizard", e)
+        _plugin_logger.debug("[SETUP] prompt_toolkit error details:", exc_info=True)
+        _setup_legacy()
+
+
+def _setup_prompt() -> None:
+    """Interactive setup wizard using prompt_toolkit."""
+    from prompt_toolkit.shortcuts import input_dialog, radiolist_dialog, checkboxlist_dialog
+    from prompt_toolkit.styles import Style
+
+    # Use `default` so prompt_toolkit inherits terminal colors.
+    # `reverse` on focus/checked uses the terminal's own highlight scheme.
+    style = Style.from_dict({
+        "dialog":                "bg:default fg:default",
+        "dialog frame":          "fg:default",
+        "dialog frame.label":    "fg:default bold",
+        "dialog.body":           "bg:default fg:default",
+        "dialog shadow":         "bg:default",
+        "dialog border":         "fg:default",
+        "text-input":            "bg:default fg:default",
+        "text-input.text":       "bg:default fg:default",
+        "text-input.placeholder":"fg:default",
+        "searchfield":           "bg:default fg:default",
+        "searchfield text":      "noinherit",
+        "radio-selected":        "fg:default reverse bold",
+        "button.focused":        "bg:default fg:default bold",
+        "radio on":              "fg:default reverse bold",
+        "radio off":             "noinherit",
+        "checkbox on":           "fg:default reverse bold",
+        "checkbox off":          "noinherit",
+        "button":                "bg:default fg:default",
+        "button.focused":        "fg:default reverse bold",
+    })
+
+    cfg = _load_current_config(os.path.expanduser("~/.hermes/.env"))
+
+    print("\n─── 🔔 Pushover Setup ───")
+    print("1. Log in at https://pushover.net")
+    print("2. Copy your User Key (front page)")
+    print("3. Create an app at https://pushover.net/apps → Create New Application")
+    print("4. Copy the API Token\n")
+
+    # Credentials
+    app_token = input_dialog(
+        title="Pushover Setup",
+        text="App Token (from pushover.net/apps):",
+        default=cfg["app_token"],
+        style=style,
+    ).run() or cfg["app_token"]
+
+    user_key = input_dialog(
+        title="Pushover Setup",
+        text="User Key (from pushover.net front page):",
+        default=cfg["user_key"],
+        style=style,
+    ).run() or cfg["user_key"]
+
+    allowed = input_dialog(
+        title="Pushover Setup",
+        text="Allowed user keys (comma-separated, empty = allow all):",
+        default=cfg["allowed"],
+        style=style,
+    ).run() or ""
+
+    # Notifications
+    print("\n─── Agent Lifecycle Notifications ───")
+    print("Get Pushover alerts when Hermes finishes work, asks questions,")
+    print("hits errors, or needs command approval.\n")
+
+    enabled_choice = radiolist_dialog(
+        title="Pushover Setup",
+        text="Enable pushover notifications?",
+        values=[
+            ("yes", "Yes"),
+            ("no", "No"),
+        ],
+        default="yes" if cfg["enabled"] else "no",
+        style=style,
+    ).run()
+    notify_enabled = enabled_choice == "yes"
+
+    question = cfg["question"]
+    states_val = cfg["states"]
+    device = cfg["device"]
+
+    if notify_enabled:
+        question = radiolist_dialog(
+            title="Pushover Setup",
+            text="Message detail level:",
+            values=[
+                ("full", "Full — include the actual question text"),
+                ("summary", "Summary — include only the first line"),
+                ("minimal", "Minimal — just 'I have a question' (privacy)"),
+            ],
+            default=cfg["question"],
+            style=style,
+        ).run()
+
+        # States checkbox
+        states_values = [
+            ("finished", "Task finished"),
+            ("questions", "Questions"),
+            ("errors", "Errors"),
+            ("pre-approval", "Pre-approval (command needs approval)"),
+            ("blockers", "Blockers (task blocked)"),
+            ("post-approval", "Post-approval (response recorded) [noisy]"),
+        ]
+        states_defaults = [v for v, _ in states_values if v in cfg["state_set"]]
+        states_choice = checkboxlist_dialog(
+            title="Pushover Setup",
+            text="Which events should trigger notifications?",
+            values=states_values,
+            default_values=states_defaults,
+            style=style,
+        ).run()
+
+        if set(states_choice) == cfg["usual_states"]:
+            states_val = "usual"
+        elif set(states_choice) == cfg["all_states"]:
+            states_val = "all"
+        else:
+            states_val = " ".join(sorted(states_choice))
+
+        device = input_dialog(
+            title="Pushover Setup",
+            text="Device filter (empty = all devices):",
+            default=cfg["device"],
+            style=style,
+        ).run() or ""
+
+    _save_config(cfg, {
+        "app_token": app_token,
+        "user_key": user_key,
+        "allowed": allowed,
+        "enabled": notify_enabled,
+        "question": question,
+        "states": states_val,
+        "device": device,
+    })
+
+
+def _setup_legacy() -> None:
+    """Interactive setup wizard using raw input() \u2014 no InquirerPy required."""
+    cfg = _load_current_config(os.path.expanduser("~/.hermes/.env"))
+
+    print()
+    _print_panel(
+        "\U0001f514 Pushover Setup",
+        "1. Log in at https://pushover.net\n"
+        "2. Your User Key is on the front page \u2014 copy it\n"
+        "3. Create an app at https://pushover.net/apps \u2192 Create New Application\n"
+        "4. Copy the API Token for your new app",
+    )
+
+    app_token = input(f"  App Token [{cfg['app_token']}]: ").strip() or cfg["app_token"]
+    user_key = input(f"  User Key [{cfg['user_key']}]: ").strip() or cfg["user_key"]
+    allowed = input(f"  Allowed user keys (empty = all) [{cfg['allowed']}]: ").strip() or cfg["allowed"]
+
+    print()
+    _print_panel(
+        "\U0001f514 Agent Lifecycle Notifications",
+        "Get Pushover alerts when Hermes finishes work, asks questions, "
+        "hits errors, or needs command approval.",
+    )
+
+    ans = input(f"  Enable notifications [{'true' if cfg['enabled'] else 'false'}]: ").strip().lower()
+    notify_enabled = ans in {"true", "yes", "1"} if ans else cfg["enabled"]
+
+    question = cfg["question"]
+    states_val = cfg["states"]
+    device = cfg["device"]
+
+    if notify_enabled:
+        # Message detail
+        print()
+        print(f"  Message detail level [{cfg['question']}]:")
+        print("    full     \u2014 include the actual question text")
+        print("    summary  \u2014 include only the first line")
+        print("    minimal  \u2014 just 'I have a question' (privacy)")
+        q = input("  > ").strip().lower()
+        question = q if q in {"full", "summary", "minimal"} else cfg["question"]
+
+        # States (interactive checkbox fallback)
+        state_choices = [
+            {"name": "Task finished", "value": "finished", "selected": "finished" in cfg["state_set"]},
+            {"name": "Questions", "value": "questions", "selected": "questions" in cfg["state_set"]},
+            {"name": "Errors", "value": "errors", "selected": "errors" in cfg["state_set"]},
+            {"name": "Pre-approval (command needs approval)", "value": "pre-approval", "selected": "pre-approval" in cfg["state_set"]},
+            {"name": "Blockers (task blocked)", "value": "blockers", "selected": "blockers" in cfg["state_set"]},
+            {"name": "Post-approval (response recorded) [noisy]", "value": "post-approval", "selected": "post-approval" in cfg["state_set"]},
+        ]
+        selected = _fallback_checkbox("Which events should trigger notifications?", state_choices)
+
+        if set(selected) == cfg["usual_states"]:
+            states_val = "usual"
+        elif set(selected) == cfg["all_states"]:
+            states_val = "all"
+        else:
+            states_val = " ".join(sorted(selected))
+
+        device = input(f"  Device filter (empty = all) [{cfg['device']}]: ").strip() or cfg["device"]
+
+    _save_config(cfg, {
+        "app_token": app_token,
+        "user_key": user_key,
+        "allowed": allowed,
+        "enabled": notify_enabled,
+        "question": question,
+        "states": states_val,
+        "device": device,
+    })
+
+
+def _fallback_checkbox(message: str, choices: list) -> list:
+    """Interactive checkbox fallback when InquirerPy is not available.
+
+    Args:
+        message: Prompt text.
+        choices: List of dicts with 'name', 'value', 'selected' keys.
+
+    Returns:
+        List of selected values.
+    """
+    print()
+    print(f"  {message}")
+    print("  (Type number to toggle, 'd' when done, 'a' = all, 'u' = usual)")
+    print()
+    while True:
+        for i, sc in enumerate(choices, 1):
+            mark = " [x]" if sc["selected"] else " [ ]"
+            print(f"    {mark} {i}. {sc['name']}")
+        print()
+        raw = input("  > ").strip().lower()
+        if raw == "d":
+            break
+        elif raw == "a":
+            for sc in choices:
+                sc["selected"] = True
+            break
+        elif raw == "u":
+            usual_values = _USUAL_STATE_SET
+            for sc in choices:
+                sc["selected"] = sc["value"] in usual_values
+            break
+        elif raw:
+            try:
+                idx = int(raw) - 1
+                if 0 <= idx < len(choices):
+                    choices[idx]["selected"] = not choices[idx]["selected"]
+                else:
+                    print("  Invalid number.")
+            except ValueError:
+                print("  Invalid input.")
+        print()
+    return [sc["value"] for sc in choices if sc["selected"]]
+
+
+def _print_panel(title: str, text: str) -> None:
+    """Print a styled panel (fallback for InquirerPy panels)."""
+    try:
+        from wcwidth import wcswidth
+    except ImportError:
+        wcswidth = len
+
+    lines = text.split("\n")
+    inner_w = max(wcswidth(title), *(wcswidth(line) for line in lines))
+    box_w = inner_w + 2  # 1 space padding on each side
+    h, v, tl, tr, bl, br, ml, mr = "\u2550", "\u2551", "\u2554", "\u2557", "\u255a", "\u255d", "\u2560", "\u2563"
+
+    def _pad(line: str, target: int) -> str:
+        return line + " " * max(0, target - wcswidth(line))
+
+    print(f" {tl}{h * box_w}{tr}")
+    print(f" {v} {_pad(title, inner_w)} {v}")
+    print(f" {ml}{h * box_w}{mr}")
+    for line in lines:
+        print(f" {v} {_pad(line, inner_w)} {v}")
+    print(f" {bl}{h * box_w}{br}")
 
 
 class PushoverAdapter(BasePlatformAdapter):
