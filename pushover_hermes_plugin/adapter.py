@@ -1311,13 +1311,6 @@ def register(ctx) -> None:
         handler=_handle_notifications_slash,
         description="Test, enable, disable, save, or check notification status (pushover/native).",
         args_hint="[test|enable|disable|save|status] [pushover|native]",
-        subcommands={
-            "test": ("pushover", "native"),
-            "enable": ("pushover", "native"),
-            "disable": ("pushover", "native"),
-            "save": (),
-            "status": (),
-        },
     )
 
     # Register agent lifecycle notification hooks
